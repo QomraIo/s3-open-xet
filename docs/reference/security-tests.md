@@ -141,8 +141,8 @@ scanned at teardown for every credential its clients sent
 | 7 | `acknowledged_shard_write_is_visible` | `crates/cas/tests/shards.rs` | M1 |
 | 7 | `acked_write_survives_sigkill` | `crates/openxet/tests/serve.rs` | M1 |
 | 7 | `acknowledged_bucket_key_write_is_visible` | pending | M5 |
-| 7 | `start_refuses_store_without_conditional_create` | pending (M3, `crates/storage/tests/object_bucket.rs`) | M3 (conditional-create probe, Task 6) |
-| 7 | `create_race_one_winner_on_object_store` | pending (M3, `crates/storage/tests/object_bucket.rs`) | M3 (object-store buckets, Task 6) |
+| 7 | `start_refuses_store_without_conditional_create` | `crates/storage/tests/object_bucket.rs` | M3 (conditional-create probe, Task 6) |
+| 7 | `create_race_one_winner_on_object_store` | `crates/storage/tests/object_bucket.rs` | M3 (object-store buckets, Task 6) |
 | 7 | `replica_miss_reads_primary` | pending (M3, `crates/openxet/tests/serve_backends.rs`) | M3 (read replica, Task 8) |
 | 7 | `token_record_reaches_bucket_before_index` | pending (M3, `crates/hub/tests/access_tokens.rs`) | M3 (token records, Task 13) |
 | 7 | `reindexed_capped_token_comes_back_exhausted` | pending (M3, `crates/hub/tests/delegated_tokens.rs`) | M3 (token records, Task 14) |

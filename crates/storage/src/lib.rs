@@ -3,8 +3,10 @@
 //!
 //! The bucket is the source of truth (design §5.3); the index is rebuildable
 //! from it. A successful [`Bucket::put`] means the bytes survive a crash or
-//! power loss. Backends beyond local disk (S3, GCS, Azure via `object_store`)
-//! arrive in M3 behind the same [`Bucket`] trait.
+//! power loss. [`LocalBucket`] keeps it on local disk; [`ObjectBucket`]
+//! keeps it in an S3 or S3-compatible bucket (ADR 0015 item 5), with the
+//! same key layout under a prefix. GCS and Azure come behind the same
+//! [`Bucket`] trait.
 //!
 //! # Objects
 //!
@@ -56,6 +58,7 @@
 mod dir;
 mod error;
 mod local;
+mod object;
 mod records;
 
 use std::fmt;
@@ -69,6 +72,7 @@ use sha2::{Digest as _, Sha256};
 pub use dir::create_private_dir_all;
 pub use error::StorageError;
 pub use local::LocalBucket;
+pub use object::ObjectBucket;
 pub use records::{PurgeRecord, RefLogEntry, RefLogRecord, Registration, RepoMeta, XorbOwner};
 
 /// The SHA-256 of a scope or tenant name, as keys carry it. Its `Display`

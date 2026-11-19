@@ -31,7 +31,7 @@ use openxet_git::Engine;
 use openxet_http::compose;
 use openxet_hub::{HubState, SharedMemory};
 use openxet_index::SqliteIndex;
-use openxet_storage::{LocalBucket, StorageError, create_private_dir_all};
+use openxet_storage::{Bucket, LocalBucket, ObjectBucket, StorageError, create_private_dir_all};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, watch};
@@ -406,19 +406,7 @@ async fn open(
                  uses it with an incompatible version. The index can be rebuilt from the bucket.",
             )
         })?;
-    let bucket = LocalBucket::open(&dir.join(BUCKET_DIR)).map_err(|err| {
-        let hint = if matches!(err, StorageError::NoHardLinks { .. }) {
-            "Move the data directory to a filesystem with hard links, such as ext4, XFS, APFS \
-             or NTFS (--data-dir or server.data_dir)."
-        } else {
-            "Check that the data directory is writable."
-        };
-        CliError::new(
-            "storage",
-            format!("could not open the bucket in {}: {err}", dir.display()),
-            hint,
-        )
-    })?;
+    let bucket = open_bucket(config).await?;
     let key = transfer_key(config)?;
     let verify_keys = transfer_verify_keys(config)?;
     let urls = UrlSigner::new(*key, config.url_lifetime)
@@ -451,7 +439,6 @@ async fn open(
         (Arc::new(auth), Some(token))
     };
     let index = Arc::new(index);
-    let bucket = Arc::new(bucket);
     let engine = Engine::start(
         Arc::clone(&index) as _,
         Arc::clone(&bucket) as _,
@@ -486,6 +473,56 @@ async fn open(
         Arc::new(capabilities),
     );
     Ok((cas, hub, dev_token))
+}
+
+/// The bucket: the local one in the data directory, or the object store
+/// at `storage.url` once it passes the conditional-create probe (ADR 0015
+/// item 6), so a node never takes traffic on a store that could let two
+/// writers' registration records diverge.
+async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
+    let dir = &config.data_dir;
+    let Some(url) = &config.storage_url else {
+        let bucket = LocalBucket::open(&dir.join(BUCKET_DIR)).map_err(|err| {
+            let hint = if matches!(err, StorageError::NoHardLinks { .. }) {
+                "Move the data directory to a filesystem with hard links, such as ext4, XFS, \
+                 APFS or NTFS (--data-dir or server.data_dir)."
+            } else {
+                "Check that the data directory is writable."
+            };
+            CliError::new(
+                "storage",
+                format!("could not open the bucket in {}: {err}", dir.display()),
+                hint,
+            )
+        })?;
+        return Ok(Arc::new(bucket));
+    };
+    let failed = |err: StorageError| {
+        let hint = match err {
+            StorageError::Unsafe { .. } => {
+                "Run on a store that honours conditional creates; see \
+                 docs/reference/config.md#storage."
+            }
+            StorageError::UnsupportedUrl { .. } => "Fix storage.url or [storage.options].",
+            _ => {
+                "Check storage.url, [storage.options], the AWS_* credentials in the environment \
+                 and that this node reaches the store."
+            }
+        };
+        CliError::new(
+            "storage",
+            format!("could not open the bucket at {url}: {err}"),
+            hint,
+        )
+    };
+    let bucket = ObjectBucket::open(url, &config.storage_options).map_err(failed)?;
+    bucket
+        .probe_conditional_create(uuid::Uuid::new_v4())
+        .await
+        .map_err(failed)?;
+    bucket.probe().await.map_err(failed)?;
+    tracing::info!(url = %url, "bucket opened in the object store");
+    Ok(Arc::new(bucket))
 }
 
 /// The dev token's entry: a write token for [`DEV_SCOPE`], as in M1, and a

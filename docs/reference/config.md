@@ -265,6 +265,68 @@ measured: [benchmarks](benchmarks.md#thin-base-budget).
 | `max_objects` | `1000000` | `1` or more | The most objects one check may visit. |
 | `max_ms` | `2000` | `1` or more | The most milliseconds one check may take. |
 
+### `[storage]`
+
+Where the bucket lives: the xorbs, shards, registration records and Git
+packs, the source of truth the index is rebuilt from. Unset, it is the
+local bucket in `server.data_dir/bucket`. With `url`, it is a bucket in
+S3 or an S3-compatible store (MinIO, Cloudflare R2, Garage and others),
+with the local bucket's key layout under the URL's prefix, so a local
+bucket copied with `aws s3 sync bucket/ s3://bucket/prefix` is read as it
+is. The index (`index.sqlite`) and the Git cache stay on the node.
+
+| Key | Default | Bounds | Meaning |
+| --- | ------- | ------ | ------- |
+| `url` | none | `s3://bucket` or `s3://bucket/prefix` | The object-store bucket. Needs an explicit `cas.transfer_key_file`. |
+| `options` | none | a table of strings, booleans and integers | `object_store`'s S3 options, such as `endpoint`, `region`, `allow_http`, `virtual_hosted_style_request` or `conditional_put`. Credentials are refused. |
+
+Credentials come from the environment, never from the configuration:
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, for temporary
+credentials, `AWS_SESSION_TOKEN`; or web identity
+(`AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN`), or the instance's role.
+Any option can also be set as its `AWS_*` variable, such as `AWS_REGION`
+or `AWS_ENDPOINT`. The credentials need `s3:GetObject`, `s3:PutObject`,
+`s3:DeleteObject`, `s3:ListBucket` and the multipart permissions
+(`s3:AbortMultipartUpload`) under the prefix.
+
+Before taking traffic, `serve` checks that the store honours conditional
+creates (`If-None-Match: *` on `PUT`): it creates `probe/{node}/create`
+under the prefix twice and requires the second to find the object, then
+writes and removes a probe object under `.tmp/`. A store that fails is
+refused with error code `storage`, since registration records rely on
+the first writer winning (ADR 0015 item 6). AWS S3, R2, MinIO and Garage
+support conditional creates.
+
+Large Git packs are written as multipart uploads in 8 MiB parts, and
+aborted on error. Add a lifecycle rule that removes incomplete multipart
+uploads after a day, for uploads a crash left behind.
+
+Downloads are served through the transfer role, as with the local bucket:
+presigned URLs straight to the store come with ADR 0015 item 7.
+`openxet purge` works on the local bucket only for now.
+
+A MinIO bucket for development:
+
+```toml
+[cas]
+transfer_key_file = "/etc/openxet/transfer.key"
+
+[storage]
+url = "s3://openxet/prod"
+
+[storage.options]
+endpoint = "http://127.0.0.1:9000"
+allow_http = true
+region = "us-east-1"
+```
+
+```bash
+AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… openxet serve --config openxet.toml
+```
+
+As environment variables: `OPENXET_STORAGE__URL=s3://openxet/prod` and
+`OPENXET_STORAGE__OPTIONS='{ endpoint = "http://127.0.0.1:9000", allow_http = true }'`.
+
 ## Dev mode
 
 Without a configuration file, or with one that has no `[auth]` section,
@@ -335,8 +397,9 @@ to each node. Replacing it invalidates every transfer URL and capability
   start with error code `no_key`. Create the key once with
   `(umask 077; openssl rand -hex 32 > /etc/openxet/transfer.key)` and copy
   it to every node.
-- Remote bucket backends (M3) must require the key: with a shared bucket
-  there is no shared data directory to hold a generated one.
+- An object-store bucket ([`storage.url`](#storage)) requires the key:
+  with a shared bucket there is no shared data directory to hold a
+  generated one, so `serve` refuses to start without it.
 
 `cas-token.key` is an Ed25519 private key in PKCS#8 PEM, the format of
 `openxet token keygen`. The Hub signs the [CAS tokens](#cas-tokens) it

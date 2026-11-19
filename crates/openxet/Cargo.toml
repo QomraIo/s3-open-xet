@@ -40,6 +40,8 @@ tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "registry", "std"] }
 url = "2.5.8"
+# The node id of the object store's conditional-create probe (ADR 0015 item 6).
+uuid = { version = "1.29.0", features = ["v4"] }
 zeroize = "1.9.1"
 
 [target.'cfg(unix)'.dependencies]

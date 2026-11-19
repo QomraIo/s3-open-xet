@@ -178,6 +178,11 @@ pub struct Config {
     /// `[git]` and `hub.commit_wait`: the Git engine's settings, its cache
     /// under `data_dir` by default (ruling M2-R16).
     pub git: GitConfig,
+    /// `storage.url`: the object-store bucket (ADR 0015 item 5), or `None`
+    /// for the local bucket in `data_dir`.
+    pub storage_url: Option<Url>,
+    /// `[storage.options]`: the store's options, never credentials.
+    pub storage_options: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -252,6 +257,8 @@ enum Kind {
     Tokens,
     Rules,
     Oidc,
+    /// A table of free-form string options: `[storage.options]`.
+    Table,
 }
 
 /// Every key, by section. Keep in step with `docs/reference/config.md`.
@@ -322,6 +329,7 @@ const KEYS: &[(&str, &[(&str, Kind)])] = &[
             ("thin_bases.max_ms", Kind::Int),
         ],
     ),
+    ("storage", &[("url", Kind::Str), ("options", Kind::Table)]),
 ];
 
 const STATIC_TOKEN_FIELDS: &[&str] = &[
@@ -437,11 +445,17 @@ impl Raw {
             Some((section, _)) => match keys_of(section) {
                 Some(keys) => format!("The keys of [{section}] are: {keys}. {DOCS}"),
                 None => {
-                    format!("The sections are [server], [cas], [auth], [hub] and [git]. {DOCS}")
+                    format!(
+                        "The sections are [server], [cas], [auth], [hub], [git] and [storage]. \
+                         {DOCS}"
+                    )
                 }
             },
             None => {
-                format!("Put keys in a [server], [cas], [auth], [hub] or [git] section. {DOCS}")
+                format!(
+                    "Put keys in a [server], [cas], [auth], [hub], [git] or [storage] section. \
+                     {DOCS}"
+                )
             }
         };
         self.problem(key, None, source, "is not a configuration key", hint);
@@ -959,6 +973,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         );
         (None, Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
     };
+    let storage = storage(c, transfer_key_explicit);
     let hub = hub(c, max_token_lifetime)?;
     let git = git(c, data_dir.as_deref());
 
@@ -995,7 +1010,157 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         page_size: hub.page_size,
         gateway_idle_timeout: hub.gateway_idle_timeout,
         git: git?,
+        storage_url: storage.as_ref()?.url.clone(),
+        storage_options: storage?.options,
     })
+}
+
+/// The `[storage]` section, checked.
+struct Storage {
+    url: Option<Url>,
+    options: BTreeMap<String, String>,
+}
+
+/// `[storage]`: where the bucket lives (ADR 0015 item 5). Unset, it is the
+/// local bucket in the data directory; `s3://bucket/prefix` keeps it in S3
+/// or an S3-compatible store, which needs an explicit
+/// `cas.transfer_key_file`: with a shared bucket there is no shared data
+/// directory to hold a generated key.
+fn storage(c: &mut Checker<'_>, transfer_key_explicit: bool) -> Option<Storage> {
+    const URL: &str = "storage.url";
+    let url = match c.raw.string(URL) {
+        None if c.raw.values.contains_key(URL) => None,
+        None => {
+            c.set(
+                URL,
+                "none: the local bucket in server.data_dir",
+                &Source::Default,
+            );
+            Some(None)
+        }
+        Some((text, source)) => match Url::parse(&text) {
+            Ok(url)
+                if url.scheme() == "s3"
+                    && url.host_str().is_some_and(|host| !host.is_empty())
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+                    && url.username().is_empty()
+                    && url.password().is_none() =>
+            {
+                c.set(URL, &text, &source);
+                Some(Some(url))
+            }
+            _ => {
+                c.raw.problem(
+                    URL,
+                    Some(text),
+                    &source,
+                    "must be an s3:// URL naming a bucket, as in s3://bucket or \
+                     s3://bucket/prefix",
+                    "Leave it out to keep the bucket in the data directory. Put the endpoint, \
+                     region and other options under [storage.options], and credentials in the \
+                     environment. See docs/reference/config.md#storage.",
+                );
+                None
+            }
+        },
+    };
+    let options = storage_options(c);
+    let url = url?;
+    let options = options?;
+    match &url {
+        Some(url) if !transfer_key_explicit => {
+            c.raw.problem(
+                "cas.transfer_key_file",
+                None,
+                &Source::Default,
+                format!("must be set when storage.url is {url}"),
+                "Every node on a shared bucket needs the same transfer key, and there is no \
+                 shared data directory to hold a generated one. Create it once with \
+                 `(umask 077; openssl rand -hex 32 > /etc/openxet/transfer.key)`, set \
+                 cas.transfer_key_file to it and copy it to every node.",
+            );
+            None
+        }
+        None if !options.is_empty() => {
+            c.raw.problem(
+                "storage.options",
+                None,
+                &Source::Default,
+                "only applies to an object-store bucket",
+                "Set storage.url, or remove [storage.options].",
+            );
+            None
+        }
+        _ => Some(Storage { url, options }),
+    }
+}
+
+/// `[storage.options]`: `object_store`'s S3 options as strings. A
+/// credential is refused: they come from the environment, the instance's
+/// role or web identity, never the configuration (ADR 0015 item 5).
+fn storage_options(c: &mut Checker<'_>) -> Option<BTreeMap<String, String>> {
+    const KEY: &str = "storage.options";
+    let Some((value, source)) = c.raw.values.get(KEY).cloned() else {
+        return Some(BTreeMap::new());
+    };
+    let toml::Value::Table(table) = value else {
+        c.raw.problem_toml(
+            KEY,
+            Some(&value),
+            &source,
+            "must be a table",
+            "Write a [storage.options] section with one key per option, as in \
+             `endpoint = \"http://127.0.0.1:9000\"`.",
+        );
+        return None;
+    };
+    let mut options = BTreeMap::new();
+    let mut valid = true;
+    for (name, value) in table {
+        let key = format!("{KEY}.{name}");
+        if is_credential_option(&name) {
+            c.raw.problem(
+                key,
+                None,
+                &source,
+                "is a credential, which the configuration never holds",
+                "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN in the \
+                 server's environment, or give the instance a role. See \
+                 docs/reference/config.md#storage.",
+            );
+            valid = false;
+            continue;
+        }
+        let text = match value {
+            toml::Value::String(text) => text,
+            toml::Value::Boolean(b) => b.to_string(),
+            toml::Value::Integer(n) => n.to_string(),
+            other => {
+                c.raw.problem_toml(
+                    key,
+                    Some(&other),
+                    &source,
+                    "must be a string, a boolean or an integer",
+                    "Write the option as in `region = \"us-east-1\"` or `allow_http = true`.",
+                );
+                valid = false;
+                continue;
+            }
+        };
+        c.set(&key, &text, &source);
+        options.insert(name, text);
+    }
+    valid.then_some(options)
+}
+
+/// Whether an S3 option names a credential: an access key, a secret, a
+/// session token or a password.
+fn is_credential_option(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["access_key", "secret", "token", "password"]
+        .iter()
+        .any(|part| name.contains(part))
 }
 
 /// The `[hub]` section, checked.
@@ -2342,6 +2507,71 @@ mod tests {
 
     fn problem_keys(loaded: &Loaded) -> Vec<&str> {
         loaded.problems.iter().map(|p| p.key.as_str()).collect()
+    }
+
+    /// `[storage]` is unset by default (the local bucket); an `s3://` URL
+    /// needs an explicit `cas.transfer_key_file`, and its options are
+    /// strings, never credentials (ADR 0015 item 5).
+    #[test]
+    fn storage_url_and_options() {
+        let config = load(None, env(&[]), &Overrides::default()).config.unwrap();
+        assert!(config.storage_url.is_none());
+        assert!(config.storage_options.is_empty());
+
+        let loaded = load_toml("[storage]\nurl = \"s3://bucket/prefix\"\n", &[]);
+        assert_eq!(problem_keys(&loaded), ["cas.transfer_key_file"]);
+
+        let loaded = load_toml(
+            "[cas]\ntransfer_key_file = \"/etc/openxet/transfer.key\"\n\
+             [storage]\nurl = \"s3://bucket/prefix\"\n\
+             [storage.options]\nendpoint = \"http://127.0.0.1:9000\"\nallow_http = true\n",
+            &[],
+        );
+        let config = loaded.config.unwrap();
+        assert_eq!(config.storage_url.unwrap().as_str(), "s3://bucket/prefix");
+        assert_eq!(
+            config.storage_options,
+            BTreeMap::from([
+                ("allow_http".to_owned(), "true".to_owned()),
+                ("endpoint".to_owned(), "http://127.0.0.1:9000".to_owned()),
+            ])
+        );
+
+        let loaded = load_toml(
+            "",
+            &[
+                ("OPENXET_CAS__TRANSFER_KEY_FILE", "/k"),
+                ("OPENXET_STORAGE__URL", "s3://b"),
+                ("OPENXET_STORAGE__OPTIONS", "{ region = \"eu-west-1\" }"),
+            ],
+        );
+        assert_eq!(
+            loaded.config.unwrap().storage_options["region"],
+            "eu-west-1"
+        );
+
+        for (toml, key) in [
+            ("[storage]\nurl = \"gs://bucket\"\n", "storage.url"),
+            ("[storage]\nurl = \"s3:///nobucket\"\n", "storage.url"),
+            ("[storage]\nurl = \"s3://b?endpoint=x\"\n", "storage.url"),
+            (
+                "[storage.options]\nregion = \"eu-west-1\"\n",
+                "storage.options",
+            ),
+            (
+                "[cas]\ntransfer_key_file = \"/k\"\n[storage]\nurl = \"s3://b\"\n\
+                 [storage.options]\nsecret_access_key = \"x\"\n",
+                "storage.options.secret_access_key",
+            ),
+            (
+                "[cas]\ntransfer_key_file = \"/k\"\n[storage]\nurl = \"s3://b\"\n\
+                 [storage.options]\nendpoint = [1]\n",
+                "storage.options.endpoint",
+            ),
+        ] {
+            let loaded = load_toml(toml, &[]);
+            assert_eq!(problem_keys(&loaded), [key], "{toml}");
+        }
     }
 
     /// `git.max_push_bytes` defaults to 10 GiB, takes a size, and refuses

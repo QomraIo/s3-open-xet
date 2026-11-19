@@ -108,6 +108,43 @@ pub enum StorageError {
         reason: &'static str,
     },
 
+    /// A request to an object store failed ([`crate::ObjectBucket`]).
+    #[error(
+        "failed to {op} {location} in the object store: {source}; check storage.url, the \
+         credentials in the environment and the network, and that the credentials may read, \
+         write, list and delete under the bucket's prefix"
+    )]
+    Remote {
+        /// What openxet was doing, e.g. `write`.
+        op: &'static str,
+        /// The object's location in the store.
+        location: String,
+        /// The store's error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// `storage.url` names a store this build can't open.
+    #[error("storage.url {url} can't be opened: {reason}")]
+    UnsupportedUrl {
+        /// The URL, as configured.
+        url: String,
+        /// Why, and what is supported.
+        reason: String,
+    },
+
+    /// The object store fails a check the server relies on, so it must not
+    /// run on it (ADR 0015 item 6).
+    #[error("the object store at {url} is unsafe to run on: {check}; {hint}")]
+    Unsafe {
+        /// The store's URL.
+        url: String,
+        /// The check that failed.
+        check: &'static str,
+        /// What to change, naming the setting.
+        hint: String,
+    },
+
     /// A streamed body held more or fewer bytes than its declared length.
     #[error(
         "the body sent for {key} held {received}{more} bytes, but {expected} were declared; nothing was stored. Send the whole object with its exact length",

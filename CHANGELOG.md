@@ -16,6 +16,14 @@ in CI.
 
 ### Added in M3
 
+- Keep the bucket in S3 or an S3-compatible store (MinIO, R2, Garage):
+  `storage.url = "s3://bucket/prefix"`, with `object_store`'s options
+  under `[storage.options]` and credentials from the environment, never
+  the configuration. The key layout is the local bucket's, so a synced
+  local bucket is read as it is. `serve` refuses a store that doesn't
+  honour conditional creates (ADR 0015 item 6), and an object-store
+  bucket needs an explicit `cas.transfer_key_file`
+  ([storage](docs/reference/config.md#storage)).
 - Keys rotate without refusing a credential handed out under them:
   `cas.transfer_verify_key_files` lists previous transfer keys that are
   accepted and never sign; each CAS token key is bound to its `alg`; and

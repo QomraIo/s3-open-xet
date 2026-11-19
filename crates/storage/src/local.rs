@@ -665,7 +665,7 @@ fn repo_depth(kind: KeyKind) -> usize {
 
 /// The key of `kind` stored at the names below `repo`'s directory, if they
 /// are the ones [`LocalBucket`] writes.
-fn repo_key(repo: RepoIdHex, kind: KeyKind, names: &[String]) -> Option<Key> {
+pub(crate) fn repo_key(repo: RepoIdHex, kind: KeyKind, names: &[String]) -> Option<Key> {
     match (kind, names) {
         (KeyKind::RepoMeta, [file]) if file == "meta" => Some(Key::RepoMeta { repo }),
         (KeyKind::Pack, [dir, file]) if dir == "packs" => {
@@ -698,7 +698,7 @@ fn repo_key(repo: RepoIdHex, kind: KeyKind, names: &[String]) -> Option<Key> {
 
 /// The hash a file named `file` in prefix directory `prefix` stores, if the
 /// names are the ones [`LocalBucket`] writes.
-fn object_hash(prefix: &str, file: &str) -> Option<MerkleHash> {
+pub(crate) fn object_hash(prefix: &str, file: &str) -> Option<MerkleHash> {
     let hash = hash_from_hex(file).ok()?;
     (hash_to_hex(&hash) == file && file.get(..2) == Some(prefix)).then_some(hash)
 }
