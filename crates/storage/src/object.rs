@@ -50,7 +50,7 @@ use object_store::{
 use openxet_protocol::hash_to_hex;
 use url::Url;
 
-use crate::local::{object_hash, repo_key};
+use crate::local::{create_private_file, io, object_hash, repo_depth, repo_key};
 use crate::{
     BodyStream, Bucket, Key, KeyKind, NameHash, RangeStream, RepoIdHex, STREAM_BLOCK_BYTES,
     StorageError, WriteMode,
@@ -120,12 +120,8 @@ impl ObjectBucket {
                     .to_owned(),
             ));
         }
+        // `Url::parse` has already resolved any `.` and `..` in the path.
         let prefix = url.path().trim_matches('/').to_owned();
-        if prefix.split('/').any(|part| part == "." || part == "..") {
-            return Err(unsupported(
-                "its prefix holds `.` or `..`; name the prefix plainly".to_owned(),
-            ));
-        }
         let mut builder = AmazonS3Builder::from_env()
             .with_bucket_name(bucket)
             .with_conditional_put(S3ConditionalPut::ETagMatch);
@@ -231,7 +227,7 @@ impl ObjectBucket {
         location: &StorePath,
         err: object_store::Error,
     ) -> StorageError {
-        if matches!(err, object_store::Error::NotImplemented { .. }) {
+        if matches!(err, object_store::Error::NotImplemented) {
             StorageError::Unsafe {
                 url: self.url.clone(),
                 check: "the store does not implement conditional creates (If-None-Match: *)",
@@ -475,19 +471,6 @@ fn hashed_key(kind: KeyKind, names: &[String]) -> Option<Key> {
     })
 }
 
-/// How many names below `repos/{id}` a key of `kind` is.
-fn repo_depth(kind: KeyKind) -> usize {
-    if kind == KeyKind::RepoMeta { 1 } else { 2 }
-}
-
-fn file_io(op: &'static str, path: &Path) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
-    move |source| StorageError::Io {
-        op,
-        path: path.to_path_buf(),
-        source,
-    }
-}
-
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, StorageError> + Send + 'static,
 ) -> Result<T, StorageError> {
@@ -498,18 +481,6 @@ async fn blocking<T: Send + 'static>(
             source: std::io::Error::other(err.to_string()),
         })
     })
-}
-
-/// Creates `path` for writing, mode `0600` on unix.
-fn create_private_file(path: &Path) -> std::io::Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    options.open(path)
 }
 
 /// Removes a temp file left by a failed [`Bucket::get_to_file`], unless
@@ -768,7 +739,7 @@ impl Bucket for ObjectBucket {
         ));
         let temp_path = temp.path();
         let mut file = blocking(move || {
-            create_private_file(&temp_path).map_err(file_io("create temp file", &temp_path))
+            create_private_file(&temp_path).map_err(io("create temp file", &temp_path))
         })
         .await?;
         if size > 0 {
@@ -778,7 +749,7 @@ impl Bucket for ObjectBucket {
                 let temp_path = temp.path();
                 file = blocking(move || {
                     file.write_all(&block)
-                        .map_err(file_io("write temp file", &temp_path))?;
+                        .map_err(io("write temp file", &temp_path))?;
                     Ok(file)
                 })
                 .await?;
@@ -787,14 +758,13 @@ impl Bucket for ObjectBucket {
         let dest = path.to_path_buf();
         let temp_path = temp.path();
         blocking(move || {
-            file.sync_all()
-                .map_err(file_io("fsync temp file", &temp_path))?;
+            file.sync_all().map_err(io("fsync temp file", &temp_path))?;
             drop(file);
-            std::fs::rename(&temp_path, &dest).map_err(file_io("rename into place", &dest))?;
+            std::fs::rename(&temp_path, &dest).map_err(io("rename into place", &dest))?;
             #[cfg(unix)]
             File::open(&dir)
                 .and_then(|d| d.sync_all())
-                .map_err(file_io("fsync directory", &dir))?;
+                .map_err(io("fsync directory", &dir))?;
             Ok(())
         })
         .await?;
@@ -908,7 +878,6 @@ mod tests {
             "s3:///p",
             "s3://b/p?endpoint=x",
             "s3://user@b/p",
-            "s3://b/../p",
         ] {
             let err = ObjectBucket::open(&Url::parse(url).unwrap(), &none).unwrap_err();
             assert!(

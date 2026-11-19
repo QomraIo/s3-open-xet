@@ -218,7 +218,7 @@ fn probe_write(tmp: &Path) -> Result<(), StorageError> {
 }
 
 /// Creates the new file `path`, mode `0600` on unix.
-fn create_private_file(path: &Path) -> std::io::Result<File> {
+pub(crate) fn create_private_file(path: &Path) -> std::io::Result<File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -229,7 +229,10 @@ fn create_private_file(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
-fn io<'a>(op: &'static str, path: &'a Path) -> impl FnOnce(std::io::Error) -> StorageError + 'a {
+pub(crate) fn io<'a>(
+    op: &'static str,
+    path: &'a Path,
+) -> impl FnOnce(std::io::Error) -> StorageError + 'a {
     move |source| StorageError::Io {
         op,
         path: path.to_path_buf(),
@@ -659,7 +662,7 @@ fn list_under_blocking(
 }
 
 /// How many levels below its repository's directory a key of `kind` is.
-fn repo_depth(kind: KeyKind) -> usize {
+pub(crate) fn repo_depth(kind: KeyKind) -> usize {
     if kind == KeyKind::RepoMeta { 1 } else { 2 }
 }
 

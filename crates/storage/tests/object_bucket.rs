@@ -112,7 +112,7 @@ impl ObjectStore for IgnoresCreate {
     async fn put_multipart_opts(
         &self,
         location: &StorePath,
-        opts: object_store::PutMultipartOpts,
+        opts: object_store::PutMultipartOptions,
     ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
         self.0.put_multipart_opts(location, opts).await
     }
