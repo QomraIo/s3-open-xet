@@ -29,7 +29,8 @@ in CI.
   asks for them, checks the bucket or creates it (`--create-bucket`), runs
   the conditional-create probe, then stores the credentials in a `0600`
   file named by the new `storage.credentials_file` and writes the
-  configuration ([`storage setup`](docs/reference/cli.md#openxet-storage-setup)).
+  configuration ([`storage setup`](docs/reference/cli.md#openxet-storage-setup),
+  [quickstart](docs/quickstart-s3.md)).
 - Keys rotate without refusing a credential handed out under them:
   `cas.transfer_verify_key_files` lists previous transfer keys that are
   accepted and never sign; each CAS token key is bound to its `alg`; and
