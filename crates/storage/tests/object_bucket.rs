@@ -51,7 +51,7 @@ fn buckets() -> Vec<ObjectBucket> {
             .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
             .collect();
         let url = url::Url::parse(&format!("{}/{run}", url.trim_end_matches('/'))).unwrap();
-        out.push(ObjectBucket::open(&url, &options).unwrap());
+        out.push(ObjectBucket::open(&url, &options, None).unwrap());
     }
     out
 }

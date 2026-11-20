@@ -98,3 +98,41 @@ fn bare_openxet_prints_help_and_exits_with_usage_code() {
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(json_error(&out)["code"], "usage");
 }
+
+/// `storage setup` refuses what it can't use before it reaches any store,
+/// and writes nothing (`docs/reference/cli.md#openxet-storage-setup`).
+#[test]
+fn storage_setup_refusals_are_usage_errors_and_write_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = |args: &[&str], env_credentials: bool| {
+        let mut cmd = openxet();
+        cmd.args(["--json", "storage", "setup"])
+            .args(args)
+            .env("XDG_CONFIG_HOME", dir.path())
+            .env_remove("AWS_ACCESS_KEY_ID")
+            .env_remove("AWS_SECRET_ACCESS_KEY")
+            .env_remove("AWS_SESSION_TOKEN");
+        if env_credentials {
+            cmd.env("AWS_ACCESS_KEY_ID", "id")
+                .env("AWS_SECRET_ACCESS_KEY", "has space");
+        }
+        cmd.output().unwrap()
+    };
+    for (args, env_credentials, code) in [
+        (&["gs://bucket"][..], true, "invalid_url"),
+        (
+            &["s3://b", "--endpoint", "ftp://x"][..],
+            true,
+            "invalid_endpoint",
+        ),
+        (&["s3://b"][..], false, "no_credentials"),
+        (&["s3://b"][..], true, "invalid_key"),
+    ] {
+        let out = setup(args, env_credentials);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let error = json_error(&out);
+        assert_eq!(error["code"], code, "{args:?}");
+        assert!(!error.to_string().contains("has space"), "{error}");
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}

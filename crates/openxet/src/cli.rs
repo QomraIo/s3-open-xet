@@ -11,6 +11,7 @@ use crate::openapi_cmd;
 use crate::output::{HumanDisplay, Output};
 use crate::purge_cmd::{self, PurgeArgs};
 use crate::serve::{self, ServeArgs};
+use crate::storage_cmd::{self, StorageCommand};
 use crate::token_cmd::{self, TokenCommand};
 use crate::transfer_cmd::{self, DownloadArgs, UploadArgs};
 use crate::workspace_cmd::{self, WorkspaceCommand};
@@ -40,6 +41,11 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    /// Connect the server to an S3 or S3-compatible bucket
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
     },
     /// Create CAS-token signing keys, CAS tokens and static tokens
     Token {
@@ -123,6 +129,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
             .map_err(|err| CliError::output(&err)),
         Command::Serve(args) => serve::run(args, output),
         Command::Config { command } => config_cmd::run(command, output),
+        Command::Storage { command } => storage_cmd::run(command, output),
         Command::Token { command } => token_cmd::run(command, output),
         Command::Upload(args) => transfer_cmd::upload(args, output),
         Command::Download(args) => transfer_cmd::download(args, output),

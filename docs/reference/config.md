@@ -279,8 +279,25 @@ is. The index (`index.sqlite`) and the Git cache stay on the node.
 | --- | ------- | ------ | ------- |
 | `url` | none | `s3://bucket` or `s3://bucket/prefix` | The object-store bucket. Needs an explicit `cas.transfer_key_file`. |
 | `options` | none | a table of strings, booleans and integers | `object_store`'s S3 options, such as `endpoint`, `region`, `allow_http`, `virtual_hosted_style_request` or `conditional_put`. Credentials are refused. |
+| `credentials_file` | none | a file path | The store's credentials, mode `0600`, as [`openxet storage setup`](cli.md#openxet-storage-setup) writes it. Unset, they come from the environment. |
 
-Credentials come from the environment, never from the configuration:
+The quickest way to set this up is
+[`openxet storage setup`](cli.md#openxet-storage-setup): it checks the
+bucket (creating it with `--create-bucket`), runs the conditional-create
+probe below, stores the credentials and writes this section.
+
+Credentials are never in the configuration itself. They come from
+`credentials_file`, a file of `NAME=value` lines (the format of a systemd
+`EnvironmentFile` or `docker --env-file`) that `serve` refuses if other
+users may read it:
+
+```text
+AWS_ACCESS_KEY_ID=…
+AWS_SECRET_ACCESS_KEY=…
+```
+
+with an optional `AWS_SESSION_TOKEN` line for temporary credentials.
+Without `credentials_file`, they come from the environment:
 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, for temporary
 credentials, `AWS_SESSION_TOKEN`; or web identity
 (`AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN`), or the instance's role.
@@ -305,7 +322,8 @@ Downloads are served through the transfer role, as with the local bucket:
 presigned URLs straight to the store come with ADR 0015 item 7.
 `openxet purge` works on the local bucket only for now.
 
-A MinIO bucket for development:
+A MinIO bucket for development, with the credentials in the
+environment:
 
 ```toml
 [cas]

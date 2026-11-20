@@ -12,12 +12,14 @@
 //! processes creating the same file at once, one wins and the other reads
 //! the winner's.
 
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use openxet_storage::S3Credentials;
 use zeroize::Zeroizing;
 
 use crate::error::{CliError, ExitCode};
@@ -385,6 +387,85 @@ pub fn transfer_key(path: &Path) -> Result<(Zeroizing<[u8; 32]>, bool), CliError
     )
 }
 
+/// The variables of a credentials file, in the order it is written.
+const S3_CREDENTIAL_NAMES: [&str; 3] = [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+];
+
+/// A credentials file for `storage.credentials_file`: `NAME=value` lines,
+/// the format of a systemd `EnvironmentFile` or `docker --env-file`.
+pub fn format_s3_credentials(credentials: &S3Credentials) -> Zeroizing<String> {
+    let mut text = Zeroizing::new(format!(
+        "# The object store's credentials, for storage.credentials_file. Keep this file \
+         private.\n{}={}\n{}={}\n",
+        S3_CREDENTIAL_NAMES[0], credentials.key_id, S3_CREDENTIAL_NAMES[1], credentials.secret_key
+    ));
+    if let Some(token) = &credentials.session_token {
+        let _ = writeln!(text, "{}={token}", S3_CREDENTIAL_NAMES[2]);
+    }
+    text
+}
+
+/// Whether `value` can be a credential: visible ASCII, as the `SigV4`
+/// headers that carry it require.
+pub fn is_credential_value(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// The credentials in the file at `path`, or `None` if it doesn't exist.
+///
+/// # Errors
+///
+/// `insecure_permissions` if other users may access it, and
+/// `invalid_key` if it holds anything but [`format_s3_credentials`]'s
+/// lines, comments and blank lines.
+pub fn read_s3_credentials(path: &Path) -> Result<Option<S3Credentials>, CliError> {
+    let Some(text) = read(path)? else {
+        return Ok(None);
+    };
+    let invalid = |why: String| {
+        CliError::new(
+            "invalid_key",
+            format!("{} is not a credentials file: {why}", path.display()),
+            "It holds AWS_ACCESS_KEY_ID=… and AWS_SECRET_ACCESS_KEY=… lines, and optionally \
+             AWS_SESSION_TOKEN=…. Fix it, or remove it and run `openxet storage setup` again.",
+        )
+    };
+    let mut values: [Option<String>; 3] = [None, None, None];
+    for (number, line) in text.lines().enumerate().map(|(i, l)| (i + 1, l.trim())) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            return Err(invalid(format!("line {number} is not NAME=value")));
+        };
+        let Some(slot) = S3_CREDENTIAL_NAMES.iter().position(|n| *n == name.trim()) else {
+            // Never echo the line: it may hold a secret.
+            return Err(invalid(format!("line {number} names an unknown variable")));
+        };
+        let value = value.trim();
+        if !is_credential_value(value) {
+            return Err(invalid(format!(
+                "{} on line {number} is empty or holds spaces or control characters",
+                S3_CREDENTIAL_NAMES[slot]
+            )));
+        }
+        values[slot] = Some(value.to_owned());
+    }
+    let [Some(key_id), Some(secret_key), session_token] = values else {
+        return Err(invalid(
+            "AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is missing".to_owned(),
+        ));
+    };
+    Ok(Some(S3Credentials {
+        key_id,
+        secret_key,
+        session_token,
+    }))
+}
+
 /// The server's CAS token key at `path`, creating one if the file doesn't
 /// exist, and whether this call created it: an Ed25519 private key in
 /// `openxet token keygen`'s format (PKCS#8 PEM). The Hub signs the CAS
@@ -494,6 +575,38 @@ mod tests {
             "-_aZ9".repeat(9)[..43].to_owned()
         )));
         assert!(!contains_token("oxt_short and oxt_"));
+    }
+
+    #[test]
+    fn s3_credentials_round_trip_and_bad_files_never_echo_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s3-credentials");
+        assert!(read_s3_credentials(&path).unwrap().is_none());
+        let credentials = S3Credentials {
+            key_id: "AKIDEXAMPLE".to_owned(),
+            secret_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY".to_owned(),
+            session_token: Some("FwoGZXIvYXdzEXAMPLE".to_owned()),
+        };
+        create(&path, format_s3_credentials(&credentials).as_bytes()).unwrap();
+        assert_eq!(read_s3_credentials(&path).unwrap(), Some(credentials));
+        assert!(!format!("{:?}", read_s3_credentials(&path).unwrap()).contains("wJalr"));
+
+        for (n, text) in [
+            "AWS_ACCESS_KEY_ID=a\n",
+            "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=\n",
+            "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=has space\n",
+            "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=s\nOTHER=hunter2\n",
+            "AWS_ACCESS_KEY_ID=a\nhunter2\n",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = dir.path().join(format!("bad-{n}"));
+            create(&path, text.as_bytes()).unwrap();
+            let err = read_s3_credentials(&path).unwrap_err();
+            assert_eq!(err.code, "invalid_key", "{text}");
+            assert!(!err.message.contains("hunter2"), "{}", err.message);
+        }
     }
 
     #[test]

@@ -17,6 +17,7 @@ mod purge_cmd;
 mod secret;
 mod serve;
 mod size;
+mod storage_cmd;
 mod token_cmd;
 mod transfer_cmd;
 mod workspace_cmd;

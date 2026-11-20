@@ -30,9 +30,11 @@
 //!   `PUT` and a larger one as a multipart upload of [`PART_BYTES`] parts,
 //!   which publishes nothing until it completes and is aborted on error.
 //!
-//! Credentials come from the environment (`AWS_ACCESS_KEY_ID`,
-//! `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`), web identity or instance
-//! metadata, never from the configuration file (ADR 0015 item 5).
+//! Credentials come from `storage.credentials_file` (passed to
+//! [`ObjectBucket::open`] as [`S3Credentials`]), the environment
+//! (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`), web
+//! identity or instance metadata, never from the configuration file (ADR
+//! 0015 item 5).
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -50,6 +52,7 @@ use object_store::{
 use openxet_protocol::hash_to_hex;
 use url::Url;
 
+use crate::bucket_admin::{BucketAdmin, BucketCreated};
 use crate::local::{create_private_file, io, object_hash, repo_depth, repo_key};
 use crate::{
     BodyStream, Bucket, Key, KeyKind, NameHash, RangeStream, RepoIdHex, STREAM_BLOCK_BYTES,
@@ -65,12 +68,34 @@ pub const PART_BYTES: usize = 8 * 1024 * 1024;
 /// How many parts of one upload are in flight at once.
 const PARTS_IN_FLIGHT: usize = 2;
 
+/// Static S3 credentials, as `storage.credentials_file` holds them. `Debug`
+/// shows the access key id only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct S3Credentials {
+    /// `AWS_ACCESS_KEY_ID`.
+    pub key_id: String,
+    /// `AWS_SECRET_ACCESS_KEY`.
+    pub secret_key: String,
+    /// `AWS_SESSION_TOKEN`, for temporary credentials.
+    pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("key_id", &self.key_id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A bucket in an object store. Opened from `storage.url` with
 /// [`ObjectBucket::open`], or around any [`ObjectStore`] with
 /// [`ObjectBucket::with_store`].
 #[derive(Debug, Clone)]
 pub struct ObjectBucket {
     store: Arc<dyn ObjectStore>,
+    /// The bucket's own requests; `None` for [`ObjectBucket::with_store`].
+    admin: Option<Arc<BucketAdmin>>,
     /// The prefix every key is stored under, without slashes at either
     /// end; empty for the bucket's root.
     prefix: String,
@@ -82,8 +107,9 @@ pub struct ObjectBucket {
 impl ObjectBucket {
     /// Opens the bucket at `url`, `s3://{bucket}/{prefix}`, with
     /// `object_store`'s S3 options (`endpoint`, `region`, `allow_http`,
-    /// `virtual_hosted_style_request`, …) from `options`. Credentials and
-    /// any option not given are read from the environment (`AWS_*`).
+    /// `virtual_hosted_style_request`, …) from `options`. Credentials are
+    /// `credentials` if given; they and any option not given are otherwise
+    /// read from the environment (`AWS_*`).
     ///
     /// Conditional creates are on (`conditional_put = "etag"`) unless
     /// `options` says otherwise; a store that can't honour them is refused
@@ -95,7 +121,11 @@ impl ObjectBucket {
     ///
     /// [`StorageError::UnsupportedUrl`] for another scheme, a URL without a
     /// bucket, an unknown option or a store the options can't build.
-    pub fn open(url: &Url, options: &BTreeMap<String, String>) -> Result<Self, StorageError> {
+    pub fn open(
+        url: &Url,
+        options: &BTreeMap<String, String>,
+        credentials: Option<&S3Credentials>,
+    ) -> Result<Self, StorageError> {
         let unsupported = |reason: String| StorageError::UnsupportedUrl {
             url: url.to_string(),
             reason,
@@ -116,7 +146,7 @@ impl ObjectBucket {
         if url.query().is_some() || url.fragment().is_some() || !url.username().is_empty() {
             return Err(unsupported(
                 "it carries a query, a fragment or user info; put options under \
-                 [storage.options] and credentials in the environment"
+                 [storage.options] and credentials in storage.credentials_file or the environment"
                     .to_owned(),
             ));
         }
@@ -134,11 +164,22 @@ impl ObjectBucket {
             })?;
             builder = builder.with_config(key, value);
         }
+        if let Some(credentials) = credentials {
+            builder = builder
+                .with_access_key_id(&credentials.key_id)
+                .with_secret_access_key(&credentials.secret_key);
+            if let Some(token) = &credentials.session_token {
+                builder = builder.with_token(token);
+            }
+        }
         let store = builder
+            .clone()
             .build()
             .map_err(|err| unsupported(err.to_string()))?;
+        let admin = BucketAdmin::new(&builder, store.clone(), bucket).map_err(unsupported)?;
         Ok(Self {
             store: Arc::new(store),
+            admin: Some(Arc::new(admin)),
             prefix,
             url: url.to_string(),
         })
@@ -150,6 +191,7 @@ impl ObjectBucket {
     pub fn with_store(store: Arc<dyn ObjectStore>, prefix: &str, url: &str) -> Self {
         Self {
             store,
+            admin: None,
             prefix: prefix.trim_matches('/').to_owned(),
             url: url.to_owned(),
         }
@@ -159,6 +201,37 @@ impl ObjectBucket {
     #[must_use]
     pub fn store(&self) -> (Arc<dyn ObjectStore>, &str) {
         (Arc::clone(&self.store), &self.prefix)
+    }
+
+    /// Whether the bucket itself exists. A bucket these credentials may not
+    /// read is an error, never reported as missing.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError::Remote`] if the store refuses or can't be reached,
+    /// and [`StorageError::UnsupportedUrl`] for a bucket from
+    /// [`ObjectBucket::with_store`].
+    pub async fn bucket_exists(&self) -> Result<bool, StorageError> {
+        self.admin()?.exists().await
+    }
+
+    /// Creates the bucket itself, in the configured region.
+    ///
+    /// # Errors
+    ///
+    /// As [`ObjectBucket::bucket_exists`], and [`StorageError::Remote`] if
+    /// another account owns a bucket of this name.
+    pub async fn create_bucket(&self) -> Result<BucketCreated, StorageError> {
+        self.admin()?.create().await
+    }
+
+    fn admin(&self) -> Result<&BucketAdmin, StorageError> {
+        self.admin
+            .as_deref()
+            .ok_or_else(|| StorageError::UnsupportedUrl {
+                url: self.url.clone(),
+                reason: "this bucket was opened around a store, not from an s3:// URL".to_owned(),
+            })
     }
 
     /// Checks that the store honours conditional creates, which
@@ -879,7 +952,7 @@ mod tests {
             "s3://b/p?endpoint=x",
             "s3://user@b/p",
         ] {
-            let err = ObjectBucket::open(&Url::parse(url).unwrap(), &none).unwrap_err();
+            let err = ObjectBucket::open(&Url::parse(url).unwrap(), &none, None).unwrap_err();
             assert!(
                 matches!(err, StorageError::UnsupportedUrl { .. }),
                 "{url}: {err}"
@@ -890,7 +963,7 @@ mod tests {
     #[test]
     fn open_refuses_unknown_options() {
         let options = BTreeMap::from([("no_such_option".to_owned(), "1".to_owned())]);
-        let err = ObjectBucket::open(&Url::parse("s3://b/p").unwrap(), &options).unwrap_err();
+        let err = ObjectBucket::open(&Url::parse("s3://b/p").unwrap(), &options, None).unwrap_err();
         assert!(err.to_string().contains("no_such_option"), "{err}");
     }
 
@@ -901,7 +974,8 @@ mod tests {
             ("allow_http".to_owned(), "true".to_owned()),
             ("region".to_owned(), "us-east-1".to_owned()),
         ]);
-        let bucket = ObjectBucket::open(&Url::parse("s3://b/a/b/").unwrap(), &options).unwrap();
+        let bucket =
+            ObjectBucket::open(&Url::parse("s3://b/a/b/").unwrap(), &options, None).unwrap();
         assert_eq!(bucket.store().1, "a/b");
     }
 }

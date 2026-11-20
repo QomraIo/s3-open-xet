@@ -24,6 +24,12 @@ in CI.
   honour conditional creates (ADR 0015 item 6), and an object-store
   bucket needs an explicit `cas.transfer_key_file`
   ([storage](docs/reference/config.md#storage)).
+- `openxet storage setup s3://bucket/prefix` connects a server to a bucket
+  before its first start: it takes the credentials from the environment or
+  asks for them, checks the bucket or creates it (`--create-bucket`), runs
+  the conditional-create probe, then stores the credentials in a `0600`
+  file named by the new `storage.credentials_file` and writes the
+  configuration ([`storage setup`](docs/reference/cli.md#openxet-storage-setup)).
 - Keys rotate without refusing a credential handed out under them:
   `cas.transfer_verify_key_files` lists previous transfer keys that are
   accepted and never sign; each CAS token key is bound to its `alg`; and

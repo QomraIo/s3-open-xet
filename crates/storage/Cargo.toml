@@ -12,6 +12,8 @@ async-trait = "0.1.92"
 bytes = "1.12.1"
 futures-core = "0.3.34"
 futures-util = "0.3.34"
+# The bucket's own SigV4 requests, built as object_store's `HttpRequest`.
+http = "1.5.0"
 # M3 object-store buckets (ADR 0015 item 5). S3 and S3-compatible stores only
 # for now; GCS and Azure follow behind their own features.
 object_store = { version = "0.12", default-features = false, features = ["aws"] }

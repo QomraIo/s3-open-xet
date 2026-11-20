@@ -111,8 +111,8 @@ pub enum StorageError {
     /// A request to an object store failed ([`crate::ObjectBucket`]).
     #[error(
         "failed to {op} {location} in the object store: {source}; check storage.url, the \
-         credentials in the environment and the network, and that the credentials may read, \
-         write, list and delete under the bucket's prefix"
+         store's credentials and the network, and that the credentials may read, write, list \
+         and delete under the bucket's prefix"
     )]
     Remote {
         /// What openxet was doing, e.g. `write`.

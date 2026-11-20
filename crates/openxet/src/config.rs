@@ -183,6 +183,10 @@ pub struct Config {
     pub storage_url: Option<Url>,
     /// `[storage.options]`: the store's options, never credentials.
     pub storage_options: BTreeMap<String, String>,
+    /// `storage.credentials_file`: the store's credentials, which
+    /// `openxet storage setup` writes; `None` takes them from the
+    /// environment or the instance.
+    pub storage_credentials_file: Option<PathBuf>,
 }
 
 impl Config {
@@ -329,7 +333,14 @@ const KEYS: &[(&str, &[(&str, Kind)])] = &[
             ("thin_bases.max_ms", Kind::Int),
         ],
     ),
-    ("storage", &[("url", Kind::Str), ("options", Kind::Table)]),
+    (
+        "storage",
+        &[
+            ("url", Kind::Str),
+            ("options", Kind::Table),
+            ("credentials_file", Kind::Str),
+        ],
+    ),
 ];
 
 const STATIC_TOKEN_FIELDS: &[&str] = &[
@@ -1011,6 +1022,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         gateway_idle_timeout: hub.gateway_idle_timeout,
         git: git?,
         storage_url: storage.as_ref()?.url.clone(),
+        storage_credentials_file: storage.as_ref()?.credentials_file.clone(),
         storage_options: storage?.options,
     })
 }
@@ -1019,6 +1031,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
 struct Storage {
     url: Option<Url>,
     options: BTreeMap<String, String>,
+    credentials_file: Option<PathBuf>,
 }
 
 /// `[storage]`: where the bucket lives (ADR 0015 item 5). Unset, it is the
@@ -1028,6 +1041,7 @@ struct Storage {
 /// directory to hold a generated key.
 fn storage(c: &mut Checker<'_>, transfer_key_explicit: bool) -> Option<Storage> {
     const URL: &str = "storage.url";
+    const CREDENTIALS: &str = "storage.credentials_file";
     let url = match c.raw.string(URL) {
         None if c.raw.values.contains_key(URL) => None,
         None => {
@@ -1066,8 +1080,31 @@ fn storage(c: &mut Checker<'_>, transfer_key_explicit: bool) -> Option<Storage> 
         },
     };
     let options = storage_options(c);
+    // A file of `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and optionally
+    // `AWS_SESSION_TOKEN` lines, mode 0600, as `openxet storage setup`
+    // writes it (ADR 0015 item 5's `*_file` option).
+    let credentials_file = match c.raw.string(CREDENTIALS) {
+        Some((text, source)) if !text.is_empty() => {
+            c.set(CREDENTIALS, &text, &source);
+            Some(Some(PathBuf::from(text)))
+        }
+        Some((_, source)) => {
+            c.raw.problem(
+                CREDENTIALS,
+                Some(String::new()),
+                &source,
+                "must be a file path",
+                "Leave it out to take the credentials from the environment, or run \
+                 `openxet storage setup` to write the file.",
+            );
+            None
+        }
+        None if c.raw.values.contains_key(CREDENTIALS) => None,
+        None => Some(None),
+    };
     let url = url?;
     let options = options?;
+    let credentials_file = credentials_file?;
     match &url {
         Some(url) if !transfer_key_explicit => {
             c.raw.problem(
@@ -1082,17 +1119,26 @@ fn storage(c: &mut Checker<'_>, transfer_key_explicit: bool) -> Option<Storage> 
             );
             None
         }
-        None if !options.is_empty() => {
+        None if !options.is_empty() || credentials_file.is_some() => {
+            let key = if options.is_empty() {
+                "storage.credentials_file"
+            } else {
+                "storage.options"
+            };
             c.raw.problem(
-                "storage.options",
+                key,
                 None,
                 &Source::Default,
                 "only applies to an object-store bucket",
-                "Set storage.url, or remove [storage.options].",
+                format!("Set storage.url, or remove {key}."),
             );
             None
         }
-        _ => Some(Storage { url, options }),
+        _ => Some(Storage {
+            url,
+            options,
+            credentials_file,
+        }),
     }
 }
 
@@ -2528,6 +2574,7 @@ mod tests {
             &[],
         );
         let config = loaded.config.unwrap();
+        assert!(config.storage_credentials_file.is_none());
         assert_eq!(config.storage_url.unwrap().as_str(), "s3://bucket/prefix");
         assert_eq!(
             config.storage_options,
@@ -2550,6 +2597,16 @@ mod tests {
             "eu-west-1"
         );
 
+        let loaded = load_toml(
+            "[cas]\ntransfer_key_file = \"/k\"\n\
+             [storage]\nurl = \"s3://b\"\ncredentials_file = \"/etc/openxet/s3-credentials\"\n",
+            &[],
+        );
+        assert_eq!(
+            loaded.config.unwrap().storage_credentials_file,
+            Some(PathBuf::from("/etc/openxet/s3-credentials"))
+        );
+
         for (toml, key) in [
             ("[storage]\nurl = \"gs://bucket\"\n", "storage.url"),
             ("[storage]\nurl = \"s3:///nobucket\"\n", "storage.url"),
@@ -2567,6 +2624,15 @@ mod tests {
                 "[cas]\ntransfer_key_file = \"/k\"\n[storage]\nurl = \"s3://b\"\n\
                  [storage.options]\nendpoint = [1]\n",
                 "storage.options.endpoint",
+            ),
+            (
+                "[storage]\ncredentials_file = \"/c\"\n",
+                "storage.credentials_file",
+            ),
+            (
+                "[cas]\ntransfer_key_file = \"/k\"\n[storage]\nurl = \"s3://b\"\n\
+                 credentials_file = \"\"\n",
+                "storage.credentials_file",
             ),
         ] {
             let loaded = load_toml(toml, &[]);

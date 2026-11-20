@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import uuid
 from pathlib import Path
 
 import httpx
@@ -27,10 +28,15 @@ pytestmark = pytest.mark.agent
 # `{checkout}`, a Git repository with one commit, where `{workspace}` is a
 # workspace created first and `{worktree}` a worktree made with plain
 # `git worktree add`. The `workspace hook` commands get HOOK_INPUT on stdin,
-# as Claude Code sends it.
+# as Claude Code sends it. Commands in NEEDS_STORE run against the S3 store
+# at OPENXET_COMPAT_S3_ENDPOINT, with AWS_ACCESS_KEY_ID and
+# AWS_SECRET_ACCESS_KEY from the environment, `{bucket}` a new bucket's
+# name, and are skipped without a store.
 JSON_COMMANDS = [
     ["version", "--json"],
     ["config", "check", "--json"],
+    ["storage", "setup", "s3://{bucket}/agent", "--endpoint", "{s3_endpoint}", "--create-bucket", "--dry-run", "--json"],
+    ["storage", "setup", "s3://{bucket}/agent", "--endpoint", "{s3_endpoint}", "--create-bucket", "--json"],
     ["token", "keygen", "--key", "{tmp}/signing.key", "--json"],
     ["token", "mint", "--key", "{key}", "--scope", "agent", "--mode", "read", "--ttl", "1h", "--json"],
     ["token", "generate", "--scope", "agent", "--mode", "write", "--subject", "agent", "--json"],
@@ -73,6 +79,8 @@ HOOK_INPUT = {
 }
 
 NEEDS_SERVER = {"upload", "download", "purge", "label"}
+
+NEEDS_STORE = {"storage"}
 
 # Commands that run until stopped. Their first stdout line is the result;
 # SIGTERM then stops them cleanly.
@@ -205,6 +213,17 @@ def test_command_json_is_parseable_with_schema(openxet_bin, args, tmp_path):
         env = isolated_env(tmp_path / "env")
         if args[0] == "workspace":
             env = workspace_env(tmp_path / "env")
+        if args[0] in NEEDS_STORE:
+            endpoint = os.environ.get("OPENXET_COMPAT_S3_ENDPOINT")
+            if not endpoint:
+                pytest.skip("set OPENXET_COMPAT_S3_ENDPOINT to an S3-compatible store")
+            env = isolated_env(
+                tmp_path / "env",
+                AWS_ACCESS_KEY_ID=os.environ["AWS_ACCESS_KEY_ID"],
+                AWS_SECRET_ACCESS_KEY=os.environ["AWS_SECRET_ACCESS_KEY"],
+            )
+            bucket = f"openxet-agent-{uuid.uuid4().hex[:12]}"
+            args = [a.replace("{s3_endpoint}", endpoint).replace("{bucket}", bucket) for a in args]
         if args[0] in NEEDS_SERVER:
             env = stack.enter_context(dev_server(openxet_bin, tmp_path))
             (tmp_path / "upload.bin").write_bytes(os.urandom(4096))

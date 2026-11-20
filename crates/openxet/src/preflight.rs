@@ -86,6 +86,17 @@ pub fn missing_transfer_key(path: &Path) -> CliError {
     )
 }
 
+/// The error for a `storage.credentials_file` that was named but is
+/// missing.
+pub fn missing_credentials_file(path: &Path) -> CliError {
+    CliError::new(
+        "no_key",
+        format!("the credentials file {} does not exist", path.display()),
+        "Run `openxet storage setup` to write it, or remove storage.credentials_file to take \
+         the credentials from the environment.",
+    )
+}
+
 /// The key of the `cas.transfer_verify_key_files` entry `path`. A verify
 /// key must be the previous transfer key, so neither error suggests
 /// generating one.
@@ -174,6 +185,19 @@ pub fn check(config: &Config) -> Findings {
         };
         let key = format!("cas.transfer_verify_key_files[{index}]");
         findings.problems.push(problem(&key, path, err));
+    }
+    if let Some(file) = &config.storage_credentials_file {
+        match secret::read_s3_credentials(file) {
+            Ok(Some(_)) => {}
+            Ok(None) => findings.problems.push(problem(
+                "storage.credentials_file",
+                file,
+                missing_credentials_file(file),
+            )),
+            Err(err) => findings
+                .problems
+                .push(problem("storage.credentials_file", file, err)),
+        }
     }
     let cas_token = dir.join(serve::CAS_TOKEN_KEY_FILE);
     if let Err(err) = secret::read_cas_token_key(&cas_token) {

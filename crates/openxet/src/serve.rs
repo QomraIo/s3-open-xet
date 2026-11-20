@@ -505,8 +505,8 @@ async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
             }
             StorageError::UnsupportedUrl { .. } => "Fix storage.url or [storage.options].",
             _ => {
-                "Check storage.url, [storage.options], the AWS_* credentials in the environment \
-                 and that this node reaches the store."
+                "Check storage.url, [storage.options], the credentials (storage.credentials_file, \
+                 or AWS_* in the environment) and that this node reaches the store."
             }
         };
         CliError::new(
@@ -515,7 +515,15 @@ async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
             hint,
         )
     };
-    let bucket = ObjectBucket::open(url, &config.storage_options).map_err(failed)?;
+    let credentials = match &config.storage_credentials_file {
+        Some(file) => Some(
+            secret::read_s3_credentials(file)?
+                .ok_or_else(|| preflight::missing_credentials_file(file))?,
+        ),
+        None => None,
+    };
+    let bucket =
+        ObjectBucket::open(url, &config.storage_options, credentials.as_ref()).map_err(failed)?;
     bucket
         .probe_conditional_create(uuid::Uuid::new_v4())
         .await

@@ -3,15 +3,18 @@
 Every command takes `--json`, which prints one JSON object with a versioned
 `schema` on stdout instead of text, and reports failures as one
 `openxet.error.v1` object on stderr ([exit codes](exit-codes.md)). Only
-`openxet purge` ever asks a question, on a terminal and without `--yes`;
-with `--json`, or without a terminal, no command reads stdin, except the
-`workspace hook` commands, which read the JSON their agent sends.
+`openxet purge` (without `--yes`) and `openxet storage setup` (without
+credentials in the environment) ever ask a question, and only on a
+terminal; with `--json`, or without a terminal, no command reads stdin,
+except the `workspace hook` commands, which read the JSON their agent
+sends.
 
 | Command | Does | `--json` schema |
 | ------- | ---- | --------------- |
 | `openxet version` | Prints version and build information | `openxet.version.v1` |
 | `openxet serve` | Serves the Xet CAS, the Hub API and Git | `openxet.serve.v1` |
 | `openxet config check` | Validates and explains the server configuration | `openxet.config-check.v1` |
+| `openxet storage setup` | Connects the server to an S3 or S3-compatible bucket | `openxet.storage-setup.v1` |
 | `openxet token keygen` | Writes a key pair for signing CAS tokens | `openxet.token-keygen.v1` |
 | `openxet token mint` | Signs a CAS token | `openxet.token-mint.v1` |
 | `openxet token generate` | Generates a static token and its config entry | `openxet.token-generate.v1` |
@@ -91,6 +94,52 @@ creates one empty file named `.openxet-check-<16 hex>` there with
 
 `dev_mode` is `true` or `false` for a valid configuration and `null` for an
 invalid one.
+
+## `openxet storage setup`
+
+```
+openxet storage setup s3://BUCKET[/PREFIX] [--endpoint URL] [--region R] [--create-bucket] [--config FILE] [--credentials-file FILE] [--dry-run] [--json]
+```
+
+Connects the server to a bucket in S3 or an S3-compatible store (MinIO,
+R2, Garage), once, before its first start ([`[storage]`](config.md#storage)).
+In order, and writing nothing until every step has passed, it:
+
+1. takes the credentials from the credentials file of an earlier run, or
+   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`)
+   in the environment, or else asks for them on a terminal, the secret
+   without echo;
+2. checks that the bucket exists, creating it with `--create-bucket`
+   (in `--region`, `us-east-1` by default); a missing bucket without it is
+   error `no_bucket`;
+3. runs the conditional-create probe `serve` runs at every start;
+4. stores the credentials in `--credentials-file` (mode `0600`), creates
+   the transfer key beside it unless the configuration names one, and
+   writes the configuration to `--config`.
+
+The files default to `s3-credentials`, `transfer.key` and `openxet.toml` in
+`$XDG_CONFIG_HOME/openxet`, or `~/.config/openxet`, never the working
+directory, where a credential would be one `git add` from a commit.
+`--endpoint` names an S3-compatible store; an `http://` endpoint also sets
+`allow_http`. An existing configuration file is never changed: the output
+is then the settings to add to it, and one that already sets `storage.url`
+is refused with `exists`. `--dry-run` checks the credentials and the bucket,
+and creates, probes and writes nothing. Then start the server with the
+command it prints:
+
+```bash
+openxet storage setup s3://openxet/dev --endpoint http://127.0.0.1:9000 --create-bucket
+openxet serve --config ~/.config/openxet/openxet.toml
+```
+
+`bucket` is `existed`, `created`, or `would_create` for `--dry-run
+--create-bucket`; `credentials` is `file`, `environment` or `prompt`;
+`config_written` is `false` when `config_file` existed, and `config` is the
+configuration either way. No credential is ever printed.
+
+```json
+{"schema":"openxet.storage-setup.v1","url":"s3://openxet/dev","bucket":"created","probed":true,"credentials":"environment","credentials_file":"/home/me/.config/openxet/s3-credentials","transfer_key_file":"/home/me/.config/openxet/transfer.key","config_file":"/home/me/.config/openxet/openxet.toml","config_written":true,"config":"…","dry_run":false}
+```
 
 ## `openxet token keygen`
 

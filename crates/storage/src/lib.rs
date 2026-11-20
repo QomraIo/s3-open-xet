@@ -55,6 +55,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bucket_admin;
 mod dir;
 mod error;
 mod local;
@@ -69,10 +70,11 @@ use futures_core::stream::BoxStream;
 use openxet_protocol::{MerkleHash, hash_to_hex};
 use sha2::{Digest as _, Sha256};
 
+pub use bucket_admin::BucketCreated;
 pub use dir::create_private_dir_all;
 pub use error::StorageError;
 pub use local::LocalBucket;
-pub use object::ObjectBucket;
+pub use object::{ObjectBucket, S3Credentials};
 pub use records::{PurgeRecord, RefLogEntry, RefLogRecord, Registration, RepoMeta, XorbOwner};
 
 /// The SHA-256 of a scope or tenant name, as keys carry it. Its `Display`
