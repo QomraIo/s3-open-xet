@@ -182,6 +182,7 @@ async fn token_without_scope_is_user_only() {
     assert_eq!(
         credential,
         Credential::User(UserPrincipal {
+            bearer: None,
             subject: "alice".to_owned(),
             name: "alice".to_owned(),
             email: None,

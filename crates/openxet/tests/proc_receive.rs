@@ -110,6 +110,7 @@ async fn openxet_relays_a_push_as_the_hook() {
     let body: openxet_storage::BodyStream =
         Box::pin(futures_util::stream::iter([Ok(Bytes::from(request))]));
     let who = UserPrincipal {
+        bearer: None,
         subject: "alice".to_owned(),
         name: "alice".to_owned(),
         email: None,

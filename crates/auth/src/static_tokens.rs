@@ -73,6 +73,7 @@ impl StaticToken {
             mode: grant.mode,
         });
         let user = |profile: &UserProfile| UserPrincipal {
+            bearer: None,
             subject: self.subject.clone(),
             name: profile.name.clone().unwrap_or_else(|| self.subject.clone()),
             email: profile.email.clone(),

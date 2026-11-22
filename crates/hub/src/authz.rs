@@ -11,7 +11,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
-use openxet_auth::{ANONYMOUS, Action, AuthError, Credential, Target, UserPrincipal};
+use openxet_auth::{ANONYMOUS, Action, AuthError, BearerToken, Credential, Target, UserPrincipal};
 use openxet_index::Repo;
 use zeroize::Zeroizing;
 
@@ -96,7 +96,10 @@ pub(crate) async fn user_for_token(
     token: &str,
 ) -> Result<UserPrincipal, HubError> {
     match state.auth.authenticate(token, state.clock.now()).await {
-        Ok(Credential::User(user) | Credential::Both(_, user)) => Ok(user),
+        Ok(Credential::User(user) | Credential::Both(_, user)) => Ok(UserPrincipal {
+            bearer: Some(BearerToken::new(token)),
+            ..user
+        }),
         Ok(Credential::Cas(_)) => Err(HubError::CasCredential),
         Err(AuthError::Unavailable) => Err(HubError::AuthnUnavailable),
         // An empty token is a malformed credential, not none.
@@ -232,8 +235,28 @@ pub async fn require(
         Action::Read => "read",
         Action::Write => "write to",
         Action::Create => "create repositories beside",
+        Action::Delete => "delete",
     };
     require_as(state, who, action, repo, verb).await
+}
+
+/// [`require`] for [`Action::Delete`] of the ref `path` in `repo`:
+/// `branch/{name}` or `tag/{name}`.
+pub(crate) async fn require_delete_ref(
+    state: &HubState,
+    who: &UserPrincipal,
+    repo: &Repo,
+    path: &str,
+) -> Result<(), HubError> {
+    require_at(
+        state,
+        who,
+        Action::Delete,
+        repo,
+        Some(path),
+        "delete refs of",
+    )
+    .await
 }
 
 /// [`require`], naming the refused action `verb` in its message.
@@ -244,8 +267,25 @@ pub(crate) async fn require_as(
     repo: &Repo,
     verb: &'static str,
 ) -> Result<(), HubError> {
+    require_at(state, who, action, repo, None, verb).await
+}
+
+/// [`require_as`] for `path` within `repo` (see [`Target::path`]).
+async fn require_at(
+    state: &HubState,
+    who: &UserPrincipal,
+    action: Action,
+    repo: &Repo,
+    path: Option<&str>,
+    verb: &'static str,
+) -> Result<(), HubError> {
     let name = (action != Action::Create).then_some(repo.name.as_str());
-    if allowed(state, who, action, &repo.namespace, name).await? {
+    let target = Target {
+        namespace: &repo.namespace,
+        name,
+        path,
+    };
+    if state.authz.allows(who, action, target).await? {
         return Ok(());
     }
     if !allowed(state, who, Action::Read, &repo.namespace, Some(&repo.name)).await? {
@@ -271,7 +311,15 @@ pub(crate) async fn allowed(
 ) -> Result<bool, HubError> {
     Ok(state
         .authz
-        .allows(who, action, Target { namespace, name })
+        .allows(
+            who,
+            action,
+            Target {
+                namespace,
+                name,
+                path: None,
+            },
+        )
         .await?)
 }
 

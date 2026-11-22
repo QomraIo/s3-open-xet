@@ -59,7 +59,7 @@ pub struct SetupArgs {
 /// The directory `storage setup` keeps its files in by default, as `token
 /// keygen` does: never the working directory, where a credential would be
 /// one `git add` from a commit.
-fn default_dir() -> Result<PathBuf, CliError> {
+pub(crate) fn default_dir() -> Result<PathBuf, CliError> {
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())

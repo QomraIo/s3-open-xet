@@ -102,9 +102,9 @@ scanned at teardown for every credential its clients sent
 | 3 | `cache_keyed_by_caller` | pending | M5 |
 | 3 | `cache_fails_closed` | pending | M5 |
 | 3 | `jwks_outage_serves_cached_then_fails_closed` | `crates/auth/tests/oidc.rs` | M3 (JWKS cache, Task 11) |
-| 3 | `cache_keyed_by_subject_and_claims` | pending (M3, `crates/auth/tests/webhook.rs`) | M3 (webhook decision cache, Task 12) |
-| 3 | `timeout_fails_closed` | pending (M3, `crates/auth/tests/webhook.rs`) | M3 (webhook, Task 12) |
-| 3 | `non_2xx_or_bad_body_fails_closed` | pending (M3, `crates/auth/tests/webhook.rs`) | M3 (webhook, Task 12) |
+| 3 | `cache_keyed_by_subject_and_claims` | `crates/auth/tests/webhook.rs` | M3 (webhook decision cache, Task 12) |
+| 3 | `timeout_fails_closed` | `crates/auth/tests/webhook.rs` | M3 (webhook, Task 12) |
+| 3 | `non_2xx_or_bad_body_fails_closed` | `crates/auth/tests/webhook.rs` | M3 (webhook, Task 12) |
 | 3 | `unknown_secret_not_cached` | pending (M3, `crates/hub/tests/access_tokens.rs`) | M3 (access-token cache, Task 13) |
 | 3 | `revoked_token_refused_on_every_node` | pending (M3, `crates/openxet/tests/token_api.rs`) | M3 (access-token cache, two nodes, Task 13) |
 | 3 | `exhausted_within_two_seconds_on_every_node` | pending (M3, `crates/cas/tests/delegated_usage.rs`) | M3 (delegated-usage cache, Task 14) |
@@ -135,7 +135,7 @@ scanned at teardown for every credential its clients sent
 | 6 | `oidc_token_never_logged` | `crates/hub/tests/security.rs` | M3 (OIDC on Hub, Git and LFS routes, Task 11) |
 | 6 | `access_token_never_logged_or_echoed` | pending (M3, `crates/hub/tests/access_tokens.rs`) | M3 (access tokens, Task 13) |
 | 6 | `secret_stored_only_as_hash` | pending (M3, `crates/hub/tests/access_tokens.rs`) | M3 (access tokens, Task 13) |
-| 6 | `webhook_secret_never_logged` | pending (M3, `crates/auth/tests/webhook.rs`) | M3 (webhook, Task 12) |
+| 6 | `webhook_secret_never_logged` | `crates/auth/tests/webhook.rs` | M3 (webhook, Task 12) |
 | 6 | `storage_secrets_only_from_files` | pending (M3, `crates/openxet/tests/serve_backends.rs`) | M3 (object-store credentials, Task 8) |
 | 7 | `acknowledged_xorb_write_is_visible` | `crates/cas/tests/xorbs.rs` | M1 |
 | 7 | `acknowledged_shard_write_is_visible` | `crates/cas/tests/shards.rs` | M1 |

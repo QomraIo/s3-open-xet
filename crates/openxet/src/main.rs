@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod authorizer_cmd;
 mod cli;
 mod config;
 mod config_cmd;

@@ -46,6 +46,7 @@ pub async fn engine(world: &World, config: GitConfig) -> Arc<Engine> {
 
 pub fn principal(subject: &str) -> UserPrincipal {
     UserPrincipal {
+        bearer: None,
         subject: subject.to_owned(),
         name: subject.to_owned(),
         email: None,

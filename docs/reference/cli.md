@@ -15,6 +15,7 @@ sends.
 | `openxet serve` | Serves the Xet CAS, the Hub API and Git | `openxet.serve.v1` |
 | `openxet config check` | Validates and explains the server configuration | `openxet.config-check.v1` |
 | `openxet storage setup` | Connects the server to an S3 or S3-compatible bucket | `openxet.storage-setup.v1` |
+| `openxet authorizer setup` | Lets your own service decide who may read, write, create and delete | `openxet.authorizer-setup.v1` |
 | `openxet token keygen` | Writes a key pair for signing CAS tokens | `openxet.token-keygen.v1` |
 | `openxet token mint` | Signs a CAS token | `openxet.token-mint.v1` |
 | `openxet token generate` | Generates a static token and its config entry | `openxet.token-generate.v1` |
@@ -139,6 +140,35 @@ configuration either way. No credential is ever printed.
 
 ```json
 {"schema":"openxet.storage-setup.v1","url":"s3://openxet/dev","bucket":"created","probed":true,"credentials":"environment","credentials_file":"/home/me/.config/openxet/s3-credentials","transfer_key_file":"/home/me/.config/openxet/transfer.key","config_file":"/home/me/.config/openxet/openxet.toml","config_written":true,"config":"…","dry_run":false}
+```
+
+## `openxet authorizer setup`
+
+```
+openxet authorizer setup URL [--config FILE] [--secret-file FILE] [--dry-run] [--json]
+```
+
+Hands every authorization decision to the service at `URL`
+([Authorizer endpoint](authorizer.md)). It sends one test request, the
+subject `openxet-setup` reading `openxet-setup/test`, signed as the server
+will sign them, and needs a valid answer, allow or deny; anything else is
+error `authorizer` and nothing is written. Then it creates the signing
+secret in `--secret-file` (mode `0600`; an existing one is reused) and adds
+`[authorizer]` to `--config`. A new configuration file is created; an
+existing one gains the section at its end and is otherwise unchanged. One
+that already has `[authorizer]` is refused with `exists`, and one with
+`[[auth.rules]]` with `config`, since the service would replace them.
+
+The files default to `authorizer.secret` and `openxet.toml` in
+`$XDG_CONFIG_HOME/openxet`, or `~/.config/openxet`. `URL` must be
+`https://`, or `http://` to this machine. `--dry-run` sends the test
+request and writes nothing.
+
+`answer` is `allow` or `deny`; `config_written` is `created`, `appended`,
+or `none` for `--dry-run`; `config` is the section.
+
+```json
+{"schema":"openxet.authorizer-setup.v1","url":"https://auth.example.com/openxet/authorize","answer":"deny","secret_file":"/home/me/.config/openxet/authorizer.secret","secret_created":true,"config_file":"/home/me/.config/openxet/openxet.toml","config_written":"appended","config":"…","dry_run":false}
 ```
 
 ## `openxet token keygen`

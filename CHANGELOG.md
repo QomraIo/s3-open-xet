@@ -24,6 +24,14 @@ in CI.
   honour conditional creates (ADR 0015 item 6), and an object-store
   bucket needs an explicit `cas.transfer_key_file`
   ([storage](docs/reference/config.md#storage)).
+- Your own service can decide who may read, write, create and delete: with
+  `[authorizer]`, OpenXet POSTs each decision (the action, the resource as
+  `{namespace}/{name}`, the verified user and their bearer token), signed
+  with HMAC-SHA256, and does what the answer says, failing closed with
+  `503` when the service can't answer. Deleting a repository, branch or
+  tag is now its own `delete` action, which rules still allow through
+  `write` and `create`. Set it up with `openxet authorizer setup`
+  ([authorizer](docs/reference/authorizer.md)).
 - `openxet storage setup s3://bucket/prefix` connects a server to a bucket
   before its first start: it takes the credentials from the environment or
   asks for them, checks the bucket or creates it (`--create-bucket`), runs

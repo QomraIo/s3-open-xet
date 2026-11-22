@@ -146,6 +146,7 @@ async fn tree_shapes() {
     let id = repo_id(&hub, "alice", "m").await.parse().unwrap();
     let pointer = canonical_pointer(&[9; 32], 5);
     let alice = openxet_auth::UserPrincipal {
+        bearer: None,
         subject: "alice".to_owned(),
         name: "alice".to_owned(),
         email: None,

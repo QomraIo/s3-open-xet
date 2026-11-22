@@ -36,7 +36,7 @@ lines.
 | `oidc` | 1 | `serve` couldn't discover an `[[auth.oidc]]` issuer: its discovery document or JWKS couldn't be fetched or read, the document names another issuer, or the JWKS holds no key a token could be checked with. The message names the issuer; the hint names the discovery URL. |
 | `insecure_permissions` | 1 | A secret file (`dev-token`, `transfer.key`, a signing key) can be read by other users. The hint names the `chmod`. |
 | `invalid_key` | 1 | A key, token or credentials file doesn't hold what it should. The message never quotes the file's contents. From `storage setup` (exit 2): a credential is empty or holds spaces. |
-| `exists` | 2 | `storage setup` found a configuration that already sets `storage.url`, or a credentials file holding other credentials than the environment's; `token keygen` would overwrite a file, or `workspace create` or `hook claude-create` names a path or branch that exists (and, for the hook, no workspace is registered at that path). Nothing was written. |
+| `exists` | 2 | `authorizer setup` found a configuration that already has `[authorizer]`; `storage setup` found a configuration that already sets `storage.url`, or a credentials file holding other credentials than the environment's; `token keygen` would overwrite a file, or `workspace create` or `hook claude-create` names a path or branch that exists (and, for the hook, no workspace is registered at that path). Nothing was written. |
 | `invalid_name` | 2 | `workspace create --name` isn't a slug of lowercase letters, digits and single hyphens of at most 64 bytes. |
 | `unknown_revision` | 2 | `workspace create --base` names no commit of the repository. |
 | `not_a_repository` | 1 | `workspace create`, `list --repo`, `adopt`, `install claude --project` or `hook claude-create` (its `cwd`) was run outside a Git repository. The hint names `--repo`. |
@@ -54,9 +54,10 @@ lines.
 | `git` | 1 | A Git command a `workspace` command ran failed; the message is Git's. |
 | `no_key` | 1 | `token mint` found no signing key at `--key`, or `serve` found no transfer key at an explicitly set `cas.transfer_key_file`, or no credentials file at `storage.credentials_file`. |
 | `invalid_ttl` | 1 | `token mint --ttl` is outside `1m` to `30d`. |
-| `invalid_url`, `invalid_endpoint` | 2 | `storage setup` was given a bucket that isn't `s3://bucket[/prefix]`, or an `--endpoint` that isn't an `http://` or `https://` URL. Nothing was run. |
+| `invalid_url`, `invalid_endpoint` | 2 | `storage setup` was given a bucket that isn't `s3://bucket[/prefix]`, or an `--endpoint` that isn't an `http://` or `https://` URL; or `authorizer setup` a URL that isn't `https://` or loopback `http://`. Nothing was run. |
 | `no_credentials` | 2 | `storage setup` found no credentials: no credentials file, no `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and no terminal to ask on (or `--json`). |
 | `no_bucket` | 1 | `storage setup` found no bucket at the URL and wasn't given `--create-bucket`. Nothing was written. |
+| `authorizer` | 1 | `authorizer setup`'s test request got no valid answer: the service couldn't be reached, timed out, redirected, answered other than `2xx`, or with neither `true`, `false` nor `{"allow": …}`. Nothing was written. |
 | `invalid_claims` | 1 | `token mint` or `token generate` was given an empty or invalid `--scope` or `--subject`. |
 | `key`, `random` | 1 | The operating system's random number generator failed. |
 | `signal`, `runtime` | 1 | `serve` or the workspace daemon couldn't install its signal handlers, or a command couldn't start its runtime. |

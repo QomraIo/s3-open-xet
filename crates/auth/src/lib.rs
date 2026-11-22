@@ -40,6 +40,7 @@ mod signed_url;
 mod static_tokens;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+mod webhook;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -56,6 +57,7 @@ pub use oidc::{JWKS_REFRESH_INTERVAL, OidcConfig, OidcIssuer, UNKNOWN_KID_REFRES
 pub use rules::{Action, Authorizer, Glob, Rule, RulesAuthorizer, Target};
 pub use signed_url::{TransferQuery, TransferUrls, UrlSigner, XorbUrls, transfer_key_id};
 pub use static_tokens::{CasGrant, StaticToken, UserProfile};
+pub use webhook::{WebhookAuthorizer, WebhookConfig};
 
 /// What a credential may do within its scope. `Write` implies `Read`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -124,6 +126,35 @@ pub struct UserPrincipal {
     /// String lists under free names, such as `orgs` and `groups`, which
     /// rules match and `whoami-v2` reads (`orgs`).
     pub claims: BTreeMap<String, Vec<String>>,
+    /// The bearer token the request authenticated with, which the
+    /// [`WebhookAuthorizer`] forwards to the operator's authorizer. Set by
+    /// the routes that authenticate a request, never by [`Authenticator`].
+    pub bearer: Option<BearerToken>,
+}
+
+/// A request's bearer token. `Debug` never shows it, and the bytes are
+/// wiped when the last copy is dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BearerToken(Arc<zeroize::Zeroizing<String>>);
+
+impl BearerToken {
+    /// Wraps `token`.
+    #[must_use]
+    pub fn new(token: &str) -> Self {
+        Self(Arc::new(zeroize::Zeroizing::new(token.to_owned())))
+    }
+
+    /// The token, to send to the operator's authorizer and nowhere else.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BearerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BearerToken(..)")
+    }
 }
 
 impl UserPrincipal {
@@ -136,6 +167,7 @@ impl UserPrincipal {
             name: ANONYMOUS.to_owned(),
             email: None,
             claims: BTreeMap::new(),
+            bearer: None,
         }
     }
 }

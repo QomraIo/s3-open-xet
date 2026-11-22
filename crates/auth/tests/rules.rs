@@ -11,6 +11,7 @@ use openxet_auth::{
 
 fn user(subject: &str) -> UserPrincipal {
     UserPrincipal {
+        bearer: None,
         subject: subject.to_owned(),
         name: subject.to_owned(),
         email: None,
@@ -47,6 +48,7 @@ fn repo<'a>(namespace: &'a str, name: &'a str) -> Target<'a> {
     Target {
         namespace,
         name: Some(name),
+        path: None,
     }
 }
 
@@ -54,6 +56,7 @@ fn namespace(namespace: &str) -> Target<'_> {
     Target {
         namespace,
         name: None,
+        path: None,
     }
 }
 
@@ -218,4 +221,27 @@ fn actions_parse_by_name() {
     }
     assert_eq!(Action::parse("admin"), None);
     assert_eq!(Action::parse("Read"), None);
+}
+
+/// `delete` is no rule action: the rules allow it where they allowed what
+/// a delete needed before, `write` and `create` for a repository and
+/// `write` for one of its refs, so configured rules keep their effect.
+#[tokio::test]
+async fn delete_follows_write_and_create() {
+    let writer = RulesAuthorizer::new(vec![subject_rule(&["w"], &["acme/*"], &[Action::Write])]);
+    let owner = RulesAuthorizer::new(vec![subject_rule(
+        &["o"],
+        &["acme/*"],
+        &[Action::Write, Action::Create],
+    )]);
+    let branch = Target {
+        path: Some("branch/dev"),
+        ..repo("acme", "m")
+    };
+    assert!(allows(&writer, &user("w"), Action::Delete, branch).await);
+    assert!(!allows(&writer, &user("w"), Action::Delete, repo("acme", "m")).await);
+    assert!(allows(&owner, &user("o"), Action::Delete, repo("acme", "m")).await);
+    assert!(!allows(&owner, &user("o"), Action::Delete, repo("other", "m")).await);
+    assert_eq!(Action::parse("delete"), None);
+    assert_eq!(branch.resource(), "acme/m/branch/dev");
 }

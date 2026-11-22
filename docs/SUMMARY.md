@@ -17,6 +17,7 @@
 - [Git LFS routes](reference/lfs.md)
 - [CAS routes](reference/routes.md)
 - [OpenAPI document](reference/openapi.md)
+- [Authorizer endpoint](reference/authorizer.md)
 - [Exit codes](reference/exit-codes.md)
 - [xet:// addresses](reference/xet-uri.md)
 - [Security tests](reference/security-tests.md)

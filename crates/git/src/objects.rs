@@ -315,6 +315,7 @@ mod tests {
     #[test]
     fn identities_drop_what_git_refuses() {
         let who = UserPrincipal {
+            bearer: None,
             subject: " eve<x>\n ".to_owned(),
             name: "eve".to_owned(),
             email: None,
@@ -324,6 +325,7 @@ mod tests {
         assert_eq!(ident.name, "evex");
         assert_eq!(ident.email, "evex@users.noreply.openxet.com");
         let spaced = UserPrincipal {
+            bearer: None,
             subject: "Ada Lovelace/1+é".to_owned(),
             ..who.clone()
         };

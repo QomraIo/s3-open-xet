@@ -284,14 +284,20 @@ async fn create_branch(
 }
 
 /// `DELETE …/branch/{branch}`: `200 {"success":true}` (S3 fixture `31`).
-/// `main` can't be deleted. Needs `write`.
+/// `main` can't be deleted. Needs `delete` on `branch/{branch}`.
 async fn delete_branch(
     access: RepoAccess,
     State(state): State<HubState>,
     params: RawPathParams,
 ) -> Result<Json<Value>, HubError> {
-    authz::require(&state, &access.who, Action::Write, &access.repo).await?;
     let branch = param(&params, "branch");
+    authz::require_delete_ref(
+        &state,
+        &access.who,
+        &access.repo,
+        &format!("branch/{branch}"),
+    )
+    .await?;
     delete_ref(&state, &access, &format!("refs/heads/{branch}"), &branch).await?;
     Ok(Json(json!({ "success": true })))
 }
@@ -329,14 +335,15 @@ async fn create_tag(
     Ok(Json(json!({})))
 }
 
-/// `DELETE …/tag/{tag}`: `200 {}` (S3 fixture `30`). Needs `write`.
+/// `DELETE …/tag/{tag}`: `200 {}` (S3 fixture `30`). Needs `delete` on
+/// `tag/{tag}`.
 async fn delete_tag(
     access: RepoAccess,
     State(state): State<HubState>,
     params: RawPathParams,
 ) -> Result<Json<Value>, HubError> {
-    authz::require(&state, &access.who, Action::Write, &access.repo).await?;
     let tag = param(&params, "rev");
+    authz::require_delete_ref(&state, &access.who, &access.repo, &format!("tag/{tag}")).await?;
     delete_ref(&state, &access, &format!("refs/tags/{tag}"), &tag).await?;
     Ok(Json(json!({})))
 }

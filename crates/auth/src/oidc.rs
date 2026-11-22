@@ -188,7 +188,7 @@ fn check_name(name: &str) -> Result<(), &'static str> {
 
 /// An issuer or JWKS URL: `https`, or `http` only to a loopback address,
 /// so keys never travel where they could be swapped.
-fn check_endpoint(url: &Url) -> Result<(), &'static str> {
+pub(crate) fn check_endpoint(url: &Url) -> Result<(), &'static str> {
     let loopback = match url.host() {
         Some(Host::Ipv4(ip)) => ip.is_loopback(),
         Some(Host::Ipv6(ip)) => ip.is_loopback(),
@@ -492,6 +492,7 @@ impl OidcIssuer {
         // Hub commits as anyone (ruling M2-R7).
         let email_verified = claims.get("email_verified") == Some(&Value::Bool(true));
         Ok(UserPrincipal {
+            bearer: None,
             name: text(&self.cfg.name_claim).unwrap_or_else(|| subject.clone()),
             email: text(&self.cfg.email_claim).filter(|_| email_verified),
             subject,

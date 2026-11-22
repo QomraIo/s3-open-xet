@@ -298,7 +298,17 @@ in the task that owns it.
   unparseable bodies are `AuthzError` (`503 authz_unavailable`, never
   allow). `auth.authorizer = "rules" | "webhook" | "rules+webhook"`
   (default `rules`): with both, a rule grant allows without a call, and
-  the webhook decides the rest.
+  the webhook decides the rest. *As built (2026-11-22, owner's request):*
+  the section is top-level `[authorizer]` (`url`, `secret_file`,
+  `timeout`, `allow_ttl`, `deny_ttl`), so it also works in dev mode,
+  which any `[auth]` key turns off; it replaces rules instead of
+  composing with them; the body names the action, `resource` and its
+  parts, `subject` and `claims`, the caller's bearer token goes in
+  `Authorization`, and the signature covers `"{timestamp}.{body}"`; the
+  answer may also be a bare `true` or `false`; and a fourth action,
+  `delete` (a repository, or `branch/{name}` and `tag/{name}` as `path`),
+  which `RulesAuthorizer` allows through `write` and `create` as before.
+  See `docs/reference/authorizer.md`.
 - **M3-R9. OpenXet access tokens** (design §5.4, ADR 0016). A secret is
   `oxt_` plus 43 base64url characters (M1-R28); its record holds the
   SHA-256 of the secret, a UUIDv7 id, the bound subject, the claims

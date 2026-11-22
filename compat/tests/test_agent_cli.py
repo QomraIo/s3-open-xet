@@ -5,10 +5,12 @@ the Rust test `every_subcommand_is_in_the_agent_leg` fails until it does.
 """
 
 import contextlib
+import http.server
 import json
 import os
 import signal
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 
@@ -31,11 +33,14 @@ pytestmark = pytest.mark.agent
 # as Claude Code sends it. Commands in NEEDS_STORE run against the S3 store
 # at OPENXET_COMPAT_S3_ENDPOINT, with AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY from the environment, `{bucket}` a new bucket's
-# name, and are skipped without a store.
+# name, and are skipped without a store. Commands in NEEDS_AUTHORIZER get
+# `{authorizer}`, the URL of a local service that allows everything.
 JSON_COMMANDS = [
     ["version", "--json"],
     ["config", "check", "--json"],
     ["storage", "setup", "s3://{bucket}/agent", "--endpoint", "{s3_endpoint}", "--create-bucket", "--dry-run", "--json"],
+    ["authorizer", "setup", "{authorizer}", "--dry-run", "--json"],
+    ["authorizer", "setup", "{authorizer}", "--json"],
     ["storage", "setup", "s3://{bucket}/agent", "--endpoint", "{s3_endpoint}", "--create-bucket", "--json"],
     ["token", "keygen", "--key", "{tmp}/signing.key", "--json"],
     ["token", "mint", "--key", "{key}", "--scope", "agent", "--mode", "read", "--ttl", "1h", "--json"],
@@ -81,6 +86,33 @@ HOOK_INPUT = {
 NEEDS_SERVER = {"upload", "download", "purge", "label"}
 
 NEEDS_STORE = {"storage"}
+
+NEEDS_AUTHORIZER = {"authorizer"}
+
+
+@contextlib.contextmanager
+def allow_all_authorizer():
+    """The URL of a service on a loopback port that answers every
+    authorization request `true` (docs/reference/authorizer.md)."""
+
+    class Allow(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["content-length"]))
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"true")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Allow)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/authorize"
+    finally:
+        server.shutdown()
 
 # Commands that run until stopped. Their first stdout line is the result;
 # SIGTERM then stops them cleanly.
@@ -224,6 +256,9 @@ def test_command_json_is_parseable_with_schema(openxet_bin, args, tmp_path):
             )
             bucket = f"openxet-agent-{uuid.uuid4().hex[:12]}"
             args = [a.replace("{s3_endpoint}", endpoint).replace("{bucket}", bucket) for a in args]
+        if args[0] in NEEDS_AUTHORIZER:
+            url = stack.enter_context(allow_all_authorizer())
+            args = [a.replace("{authorizer}", url) for a in args]
         if args[0] in NEEDS_SERVER:
             env = stack.enter_context(dev_server(openxet_bin, tmp_path))
             (tmp_path / "upload.bin").write_bytes(os.urandom(4096))

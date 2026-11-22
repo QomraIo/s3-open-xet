@@ -22,11 +22,17 @@ pub enum Action {
     Write,
     /// Create a repository in a namespace.
     Create,
+    /// Delete a repository, or with [`Target::path`] one of its branches or
+    /// tags. Only an authorizer that is asked it decides it alone:
+    /// [`RulesAuthorizer`] allows it where the rules allow what it needed
+    /// before, `write` and `create` for a repository, `write` for a ref.
+    Delete,
 }
 
 impl Action {
     /// The action named `name` in configuration: `read`, `write` or
-    /// `create`.
+    /// `create`. `delete` is no rule action: rules grant it through
+    /// `write` and `create`.
     #[must_use]
     pub fn parse(name: &str) -> Option<Self> {
         match name {
@@ -44,6 +50,7 @@ impl Action {
             Self::Read => "read",
             Self::Write => "write",
             Self::Create => "create",
+            Self::Delete => "delete",
         }
     }
 
@@ -62,6 +69,23 @@ pub struct Target<'a> {
     pub namespace: &'a str,
     /// The repository's name; `None` for [`Action::Create`].
     pub name: Option<&'a str>,
+    /// What within the repository, for [`Action::Delete`] of a ref:
+    /// `branch/{name}` or `tag/{name}`, as the Hub API's routes name them.
+    /// `None` for the repository itself.
+    pub path: Option<&'a str>,
+}
+
+impl Target<'_> {
+    /// The target as one path, the way a repository's URL names it:
+    /// `{namespace}`, `{namespace}/{name}` or `{namespace}/{name}/{path}`.
+    #[must_use]
+    pub fn resource(&self) -> String {
+        [Some(self.namespace), self.name, self.path]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("/")
+    }
 }
 
 /// Decides what a user may do per repository or namespace (design §5.4).
@@ -287,6 +311,17 @@ impl Authorizer for RulesAuthorizer {
         action: Action,
         target: Target<'_>,
     ) -> Result<bool, AuthzError> {
-        Ok(self.0.iter().any(|rule| rule.allows(who, action, target)))
+        let any = |action, target| self.0.iter().any(|rule| rule.allows(who, action, target));
+        let repo = Target {
+            path: None,
+            ..target
+        };
+        Ok(match (action, target.path) {
+            (Action::Delete, None) => {
+                any(Action::Write, repo) && any(Action::Create, Target { name: None, ..repo })
+            }
+            (Action::Delete, Some(_)) => any(Action::Write, repo),
+            _ => any(action, target),
+        })
     }
 }

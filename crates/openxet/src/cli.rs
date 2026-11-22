@@ -4,6 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use openxet_protocol::PROTOCOL_SPEC;
 use serde::Serialize;
 
+use crate::authorizer_cmd::{self, AuthorizerCommand};
 use crate::config_cmd::{self, ConfigCommand};
 use crate::error::{CliError, ExitCode};
 use crate::label_cmd::{self, LabelCommand};
@@ -41,6 +42,11 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    /// Let your own service decide who may read, write, create and delete
+    Authorizer {
+        #[command(subcommand)]
+        command: AuthorizerCommand,
     },
     /// Connect the server to an S3 or S3-compatible bucket
     Storage {
@@ -129,6 +135,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
             .map_err(|err| CliError::output(&err)),
         Command::Serve(args) => serve::run(args, output),
         Command::Config { command } => config_cmd::run(command, output),
+        Command::Authorizer { command } => authorizer_cmd::run(command, output),
         Command::Storage { command } => storage_cmd::run(command, output),
         Command::Token { command } => token_cmd::run(command, output),
         Command::Upload(args) => transfer_cmd::upload(args, output),

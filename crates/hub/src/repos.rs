@@ -173,6 +173,7 @@ async fn create_with(
 async fn initial_commit(state: &HubState, id: RepoId) -> Result<(), HubError> {
     let ident = Ident::openxet();
     let openxet = UserPrincipal {
+        bearer: None,
         subject: ident.name.clone(),
         name: ident.name,
         email: Some(ident.email),
@@ -479,8 +480,7 @@ async fn delete(
     let namespace = body.organization.unwrap_or_else(|| who.name.clone());
     let access = RepoAccess::resolve(&state, who, &namespace, &body.name, view).await?;
     let repo = &access.repo;
-    authz::require_as(&state, &access.who, Action::Write, repo, "delete").await?;
-    authz::require_as(&state, &access.who, Action::Create, repo, "delete").await?;
+    authz::require(&state, &access.who, Action::Delete, repo).await?;
     let meta = meta_of(repo, Some(state.clock.now()))?;
     state
         .bucket

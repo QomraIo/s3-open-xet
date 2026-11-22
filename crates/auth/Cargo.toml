@@ -49,6 +49,9 @@ curve25519-dalek = "5.0.0"
 openxet-auth = { path = ".", features = ["test-support"] }
 serde_urlencoded = "0.7.1"
 tokio = { version = "1.54.1", features = ["macros", "rt", "rt-multi-thread"] }
+# `webhook_secret_never_logged` reads what a failed decision logs.
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
 [lints]
 workspace = true

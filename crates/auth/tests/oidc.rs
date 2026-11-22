@@ -68,6 +68,7 @@ async fn oidc_token_becomes_user_principal() {
     claims["groups"] = "ml-team".into();
     claims["ignored"] = json!(["not", "mapped"]);
     let expected = UserPrincipal {
+        bearer: None,
         subject: "corp:u-42".to_owned(),
         name: "alice".to_owned(),
         email: Some("alice@example.com".to_owned()),

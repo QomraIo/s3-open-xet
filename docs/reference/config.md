@@ -526,6 +526,16 @@ claim names and claim values may not contain control characters.
 `tenant` follows the same rules as `scope` and may not start with
 `scope:`; without it the tenant is `scope:` and the scope.
 
+## Authorizer
+
+`[authorizer]` hands every decision to your own service instead of rules:
+OpenXet POSTs who wants to do what to which resource, with the user's
+bearer token, and your service answers allow or deny. Set it up with
+[`openxet authorizer setup`](cli.md#openxet-authorizer-setup); the keys,
+the request and the answer are in [Authorizer endpoint](authorizer.md).
+It replaces `[[auth.rules]]`, which can't be set beside it, and works in
+dev mode too.
+
 ## Rules
 
 Rules decide what a user credential may do on the Hub API, Git and LFS

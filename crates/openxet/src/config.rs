@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use openxet_auth::{
     Action, AuthError, Authenticator, CasGrant, Glob, Mode, OidcConfig, PublicKey,
-    REPO_SCOPE_PREFIX, Rule, StaticToken, UrlSigner, UserProfile,
+    REPO_SCOPE_PREFIX, Rule, StaticToken, UrlSigner, UserProfile, WebhookConfig,
 };
 use openxet_cas::{BodyDeadline, CasConfig, MemoryBudget};
 use openxet_git::{Budget, GitConfig};
@@ -183,6 +183,9 @@ pub struct Config {
     pub storage_url: Option<Url>,
     /// `[storage.options]`: the store's options, never credentials.
     pub storage_options: BTreeMap<String, String>,
+    /// `[authorizer]`: the operator's service that decides every action
+    /// (ruling M3-R8), in place of `[[auth.rules]]` or dev mode's rule.
+    pub authorizer: Option<AuthorizerConfig>,
     /// `storage.credentials_file`: the store's credentials, which
     /// `openxet storage setup` writes; `None` takes them from the
     /// environment or the instance.
@@ -334,6 +337,16 @@ const KEYS: &[(&str, &[(&str, Kind)])] = &[
         ],
     ),
     (
+        "authorizer",
+        &[
+            ("url", Kind::Str),
+            ("secret_file", Kind::Str),
+            ("timeout", Kind::Str),
+            ("allow_ttl", Kind::Str),
+            ("deny_ttl", Kind::Str),
+        ],
+    ),
+    (
         "storage",
         &[
             ("url", Kind::Str),
@@ -457,14 +470,16 @@ impl Raw {
                 Some(keys) => format!("The keys of [{section}] are: {keys}. {DOCS}"),
                 None => {
                     format!(
-                        "The sections are [server], [cas], [auth], [hub], [git] and [storage]. \
+                        "The sections are [server], [cas], [auth], [authorizer], [hub], [git] and \
+                         [storage]. \
                          {DOCS}"
                     )
                 }
             },
             None => {
                 format!(
-                    "Put keys in a [server], [cas], [auth], [hub], [git] or [storage] section. \
+                    "Put keys in a [server], [cas], [auth], [authorizer], [hub], [git] or \
+                     [storage] section. \
                      {DOCS}"
                 )
             }
@@ -985,6 +1000,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         (None, Some(Vec::new()), Some(Vec::new()), Some(Vec::new()))
     };
     let storage = storage(c, transfer_key_explicit);
+    let authorizer = authorizer(c);
     let hub = hub(c, max_token_lifetime)?;
     let git = git(c, data_dir.as_deref());
 
@@ -1021,9 +1037,135 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         page_size: hub.page_size,
         gateway_idle_timeout: hub.gateway_idle_timeout,
         git: git?,
+        authorizer: authorizer?.config,
         storage_url: storage.as_ref()?.url.clone(),
         storage_credentials_file: storage.as_ref()?.credentials_file.clone(),
         storage_options: storage?.options,
+    })
+}
+
+/// `[authorizer]`, checked: the operator's service that decides every
+/// action (ruling M3-R8).
+#[derive(Debug, Clone)]
+pub struct AuthorizerConfig {
+    /// Where decisions are asked.
+    pub url: Url,
+    /// The HMAC key requests are signed with, mode `0600`.
+    pub secret_file: Option<PathBuf>,
+    /// How long one decision may take before the request fails closed.
+    pub timeout: Duration,
+    /// The longest an allow is reused.
+    pub allow_ttl: Duration,
+    /// The longest a deny is reused.
+    pub deny_ttl: Duration,
+}
+
+/// The `[authorizer]` section: `config` is `None` when it is unset.
+struct AuthorizerSection {
+    config: Option<AuthorizerConfig>,
+}
+
+/// `[authorizer]`. Unset, `[[auth.rules]]` (or dev mode's rule) decide;
+/// set, the service at `url` decides everything, so the two never apply
+/// together.
+fn authorizer(c: &mut Checker<'_>) -> Option<AuthorizerSection> {
+    const URL: &str = "authorizer.url";
+    const SECRET: &str = "authorizer.secret_file";
+    let in_section = c.raw.values.keys().any(|k| k.starts_with("authorizer."));
+    if !in_section {
+        return Some(AuthorizerSection { config: None });
+    }
+    let url = match c.raw.string(URL) {
+        Some((text, source)) => match Url::parse(&text)
+            .map_err(|_| "is not a URL")
+            .and_then(|url| WebhookConfig::check_url(&url).map(|()| url))
+        {
+            Ok(url) => {
+                c.set(URL, &text, &source);
+                Some(url)
+            }
+            Err(rule) => {
+                c.raw.problem(
+                    URL,
+                    Some(text),
+                    &source,
+                    rule,
+                    "Name the service that answers OpenXet's authorization requests, as in \
+                     `https://auth.example.com/openxet/authorize`; see \
+                     docs/reference/authorizer.md.",
+                );
+                None
+            }
+        },
+        None if c.raw.values.contains_key(URL) => None,
+        None => {
+            c.raw.problem(
+                URL,
+                None,
+                &Source::Default,
+                "must be set in an [authorizer] section",
+                "Set it to your authorization service, or remove [authorizer].",
+            );
+            None
+        }
+    };
+    let secret_file = match c.raw.string(SECRET) {
+        Some((text, source)) if !text.is_empty() => {
+            c.set(SECRET, &text, &source);
+            Some(Some(PathBuf::from(text)))
+        }
+        Some((_, source)) => {
+            c.raw.problem(
+                SECRET,
+                Some(String::new()),
+                &source,
+                "must be a file path",
+                "Leave it out to send unsigned requests, or run `openxet authorizer setup` to \
+                 create one.",
+            );
+            None
+        }
+        None if c.raw.values.contains_key(SECRET) => None,
+        None => Some(None),
+    };
+    let timeout = c.duration(
+        "authorizer.timeout",
+        Duration::from_secs(2),
+        (SECOND, Duration::from_secs(30)),
+        "A request waits this long for a decision, then fails closed with 503.",
+    );
+    let ttl_range = (Duration::ZERO, Duration::from_hours(1));
+    let allow_ttl = c.duration(
+        "authorizer.allow_ttl",
+        Duration::from_secs(30),
+        ttl_range,
+        "How long a caller keeps an allow; 0s asks every time.",
+    );
+    let deny_ttl = c.duration(
+        "authorizer.deny_ttl",
+        Duration::from_secs(5),
+        ttl_range,
+        "How long a caller keeps a deny; 0s asks every time.",
+    );
+    if c.raw.values.keys().any(|k| k.starts_with("auth.rules")) {
+        c.raw.problem(
+            "authorizer",
+            None,
+            &Source::Default,
+            "replaces [[auth.rules]], which are set too",
+            "With [authorizer], your service decides every action. Remove [[auth.rules]], or \
+             remove [authorizer] to keep the rules.",
+        );
+        return None;
+    }
+    Some(AuthorizerSection {
+        config: Some(AuthorizerConfig {
+            url: url?,
+            secret_file: secret_file?,
+            timeout: timeout?,
+            allow_ttl: allow_ttl?,
+            deny_ttl: deny_ttl?,
+        }),
     })
 }
 

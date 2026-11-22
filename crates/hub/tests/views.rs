@@ -168,6 +168,7 @@ async fn unprefixed_git_address_serves_any_label() {
     let hub = hub().await;
     hub.create(ALICE, "alice", "d", Some("dataset")).await;
     let alice = UserPrincipal {
+        bearer: None,
         subject: "alice".to_owned(),
         name: "alice".to_owned(),
         email: None,

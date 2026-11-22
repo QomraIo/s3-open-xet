@@ -82,14 +82,16 @@ takes), `408 body_timeout` and `413 payload_too_large`.
 ## Routes
 
 `{type}` is `models`, `datasets`, `spaces` or `kernels`; `{repo}` is
-`{namespace}/{name}`.
+`{namespace}/{name}`. `delete` is what an [authorizer](authorizer.md) is
+asked; [rules](config.md#rules) allow it where they allow `write` and
+`create` for a repository, and `write` for a branch or tag.
 
 <!-- table-caption: Hub API routes, their credential and what they do -->
 | Method and path | Credential | Does |
 | --------------- | ---------- | ---- |
 | `GET /api/whoami-v2` | any | Who the token acts for |
 | `POST /api/repos/create` | create | Create a repository |
-| `DELETE /api/repos/delete` | write and create | Delete a repository |
+| `DELETE /api/repos/delete` | delete | Delete a repository |
 | `GET /api/{type}` | read | List repositories with the type's label |
 | `GET /api/{type}/{repo}`, `…/revision/{rev}` | read | Repository info at a revision |
 | `POST /api/{type}/{repo}/preupload/{rev}` | write | How to upload each file |
@@ -97,8 +99,8 @@ takes), `408 body_timeout` and `413 payload_too_large`.
 | `GET /api/{type}/{repo}/xet-read-token/{rev}` | read | A CAS token for downloads |
 | `POST /api/{type}/{repo}/commit/{rev}` | write | Commit to a branch |
 | `GET /api/{type}/{repo}/refs` | read | Branches and tags |
-| `POST`, `DELETE /api/{type}/{repo}/branch/{branch}` | write | Create or delete a branch |
-| `POST`, `DELETE /api/{type}/{repo}/tag/{rev}` | write | Create or delete a tag |
+| `POST`, `DELETE /api/{type}/{repo}/branch/{branch}` | write; delete for `DELETE` | Create or delete a branch |
+| `POST`, `DELETE /api/{type}/{repo}/tag/{rev}` | write; delete for `DELETE` | Create or delete a tag |
 | `GET /api/{type}/{repo}/tree/{rev}[/{path}]` | read | List a folder |
 | `POST /api/{type}/{repo}/paths-info/{rev}` | read | The entries at some paths |
 | `GET /api/{type}/{repo}/commits/{rev}` | read | The history |

@@ -24,6 +24,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use openxet_auth::{
     Action, Authenticator, Authorizer, CapabilitySigner, CasGrant, Glob, Mode, OidcConfig,
     OidcIssuer, Rule, RulesAuthorizer, StaticToken, TokenSigner, UrlSigner, UserProfile,
+    WebhookAuthorizer, WebhookConfig,
 };
 use openxet_cas::{AppState, starting_router};
 use openxet_client::STATIC_TOKEN_EXP;
@@ -161,8 +162,13 @@ async fn serve(config: Config, output: Output) -> Result<(), CliError> {
         },
     ));
 
-    let authorizer = Arc::new(authorizer(&config));
-    let rules = authorizer.rules().len();
+    let (authorizer, rules) = if let Some(webhook) = webhook_authorizer(&config)? {
+        (webhook, 0)
+    } else {
+        let rules = rules_authorizer(&config);
+        let count = rules.rules().len();
+        (Arc::new(rules) as Arc<dyn Authorizer>, count)
+    };
     let (cas, hub, dev_token) = open(&config, &public_url, authorizer).await?;
     let body_deadline = cas.cfg.body_deadline;
     let hub_endpoint = hub.cfg.public_url.as_str().trim_end_matches('/').to_owned();
@@ -189,6 +195,7 @@ async fn serve(config: Config, output: Output) -> Result<(), CliError> {
         %hub_endpoint,
         dev_mode = dev_token.is_some(),
         rules,
+        authorizer = config.authorizer.as_ref().map(|a| a.url.as_str()),
         "ready"
     );
     if !*stop.borrow() {
@@ -560,9 +567,54 @@ fn dev_rule() -> Rule {
     }
 }
 
-/// The authorizer for user credentials: `[[auth.rules]]`, or in dev mode
-/// (no `[auth]`) [`dev_rule`].
-fn authorizer(config: &Config) -> RulesAuthorizer {
+/// The webhook authorizer of `[authorizer]`, if set (ruling M3-R8): the
+/// operator's service decides every action, in dev mode too, where the dev
+/// token still authenticates.
+fn webhook_authorizer(config: &Config) -> Result<Option<Arc<dyn Authorizer>>, CliError> {
+    let Some(cfg) = &config.authorizer else {
+        return Ok(None);
+    };
+    let secret = match &cfg.secret_file {
+        Some(file) => Some(Zeroizing::new(
+            preflight::authorizer_secret(file)?.as_bytes().to_vec(),
+        )),
+        None => None,
+    };
+    // Never follow a redirect: a decision must come from the URL configured.
+    let http = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| {
+            CliError::new(
+                "runtime",
+                format!("could not start the HTTP client for the authorizer: {err}"),
+                "Check the system's TLS and proxy configuration.",
+            )
+        })?;
+    let webhook = WebhookAuthorizer::new(
+        WebhookConfig {
+            url: cfg.url.clone(),
+            secret,
+            timeout: cfg.timeout,
+            allow_ttl: cfg.allow_ttl,
+            deny_ttl: cfg.deny_ttl,
+        },
+        http,
+    )
+    .map_err(|err| {
+        CliError::new(
+            "config",
+            err,
+            "Fix authorizer.url; see docs/reference/authorizer.md.",
+        )
+    })?;
+    Ok(Some(Arc::new(webhook)))
+}
+
+/// The rules authorizer for user credentials: `[[auth.rules]]`, or in dev
+/// mode (no `[auth]`) [`dev_rule`].
+fn rules_authorizer(config: &Config) -> RulesAuthorizer {
     if config.auth.is_some() {
         RulesAuthorizer::new(config.rules.clone())
     } else {
@@ -840,7 +892,7 @@ mod tests {
         let config = crate::config::load(None, Vec::new(), &crate::config::Overrides::default())
             .config
             .unwrap();
-        let authz = authorizer(&config);
+        let authz = rules_authorizer(&config);
         assert_eq!(authz.rules(), [dev_rule()]);
         for (action, target) in [
             (
@@ -848,6 +900,7 @@ mod tests {
                 Target {
                     namespace: "any",
                     name: Some("repo"),
+                    path: None,
                 },
             ),
             (
@@ -855,6 +908,7 @@ mod tests {
                 Target {
                     namespace: "any",
                     name: Some("repo"),
+                    path: None,
                 },
             ),
             (
@@ -862,6 +916,7 @@ mod tests {
                 Target {
                     namespace: "any",
                     name: None,
+                    path: None,
                 },
             ),
         ] {
@@ -878,7 +933,8 @@ mod tests {
                     Action::Read,
                     Target {
                         namespace: "a",
-                        name: Some("b")
+                        name: Some("b"),
+                        path: None,
                     }
                 )
                 .await

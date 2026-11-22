@@ -86,6 +86,65 @@ pub fn missing_transfer_key(path: &Path) -> CliError {
     )
 }
 
+/// The error for an `authorizer.secret_file` that was named but is
+/// missing.
+pub fn missing_authorizer_secret(path: &Path) -> CliError {
+    CliError::new(
+        "no_key",
+        format!(
+            "the authorizer secret file {} does not exist",
+            path.display()
+        ),
+        "Run `openxet authorizer setup` to create it, or remove authorizer.secret_file to send \
+         unsigned requests.",
+    )
+}
+
+/// The secret at `authorizer.secret_file` `path`, trimmed.
+///
+/// # Errors
+///
+/// `no_key` if it is missing, `invalid_key` if it is empty, and
+/// `insecure_permissions` if other users may read it.
+pub fn authorizer_secret(path: &Path) -> Result<Zeroizing<String>, CliError> {
+    let text = secret::read(path)?.ok_or_else(|| missing_authorizer_secret(path))?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::new(
+            "invalid_key",
+            format!("{} is empty", path.display()),
+            "Remove it and run `openxet authorizer setup` to create a new secret.",
+        ));
+    }
+    Ok(Zeroizing::new(trimmed.to_owned()))
+}
+
+/// The problems of the secret files that reach other services:
+/// `authorizer.secret_file` and `storage.credentials_file`.
+fn service_secrets(config: &Config) -> Vec<(&'static str, PathBuf, CliError)> {
+    let mut problems = Vec::new();
+    if let Some(file) = config
+        .authorizer
+        .as_ref()
+        .and_then(|a| a.secret_file.as_ref())
+        && let Err(err) = authorizer_secret(file)
+    {
+        problems.push(("authorizer.secret_file", file.clone(), err));
+    }
+    if let Some(file) = &config.storage_credentials_file {
+        match secret::read_s3_credentials(file) {
+            Ok(Some(_)) => {}
+            Ok(None) => problems.push((
+                "storage.credentials_file",
+                file.clone(),
+                missing_credentials_file(file),
+            )),
+            Err(err) => problems.push(("storage.credentials_file", file.clone(), err)),
+        }
+    }
+    problems
+}
+
 /// The error for a `storage.credentials_file` that was named but is
 /// missing.
 pub fn missing_credentials_file(path: &Path) -> CliError {
@@ -186,18 +245,8 @@ pub fn check(config: &Config) -> Findings {
         let key = format!("cas.transfer_verify_key_files[{index}]");
         findings.problems.push(problem(&key, path, err));
     }
-    if let Some(file) = &config.storage_credentials_file {
-        match secret::read_s3_credentials(file) {
-            Ok(Some(_)) => {}
-            Ok(None) => findings.problems.push(problem(
-                "storage.credentials_file",
-                file,
-                missing_credentials_file(file),
-            )),
-            Err(err) => findings
-                .problems
-                .push(problem("storage.credentials_file", file, err)),
-        }
+    for (key, file, err) in service_secrets(config) {
+        findings.problems.push(problem(key, &file, err));
     }
     let cas_token = dir.join(serve::CAS_TOKEN_KEY_FILE);
     if let Err(err) = secret::read_cas_token_key(&cas_token) {
