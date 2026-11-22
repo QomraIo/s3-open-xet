@@ -7,6 +7,7 @@
 - [Quickstart: hf and git](quickstart-hub.md)
 - [Quickstart: storage only](quickstart-storage-only.md)
 - [Quickstart: storage on S3](quickstart-s3.md)
+- [Quickstart: S3 with your own authorization](quickstart-s3-authorizer.md)
 - [Git hosting](guides/git-hosting.md)
 - [Git LFS for any Git host](guides/lfs-for-any-repo.md)
 - [Agent workspaces](guides/agent-workspaces.md)

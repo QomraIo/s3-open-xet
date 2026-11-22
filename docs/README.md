@@ -22,7 +22,9 @@ Hugging Face.
   [rules](reference/config.md#rules). The
   [storage-only quickstart](quickstart-storage-only.md) shows the storage
   layer on its own, and the [S3 quickstart](quickstart-s3.md) keeps the
-  server's data in an Amazon S3 bucket.
+  server's data in an Amazon S3 bucket. The
+  [S3 and authorization quickstart](quickstart-s3-authorizer.md) adds your
+  own service deciding who may do what.
 - **Host Git repositories:** [Git hosting](guides/git-hosting.md), and
   [Git LFS for any Git host](guides/lfs-for-any-repo.md) to keep the
   repository elsewhere and its large files here.
