@@ -183,6 +183,9 @@ pub struct Config {
     pub storage_url: Option<Url>,
     /// `[storage.options]`: the store's options, never credentials.
     pub storage_options: BTreeMap<String, String>,
+    /// `[index]`: the Postgres database every node shares (ruling M3-R2),
+    /// or `None` for SQLite in `data_dir`.
+    pub index: Option<PostgresConfig>,
     /// `[authorizer]`: the operator's service that decides every action
     /// (ruling M3-R8), in place of `[[auth.rules]]` or dev mode's rule.
     pub authorizer: Option<AuthorizerConfig>,
@@ -354,6 +357,14 @@ const KEYS: &[(&str, &[(&str, Kind)])] = &[
             ("credentials_file", Kind::Str),
         ],
     ),
+    (
+        "index",
+        &[
+            ("url", Kind::Str),
+            ("password_file", Kind::Str),
+            ("max_connections", Kind::Int),
+        ],
+    ),
 ];
 
 const STATIC_TOKEN_FIELDS: &[&str] = &[
@@ -470,16 +481,16 @@ impl Raw {
                 Some(keys) => format!("The keys of [{section}] are: {keys}. {DOCS}"),
                 None => {
                     format!(
-                        "The sections are [server], [cas], [auth], [authorizer], [hub], [git] and \
-                         [storage]. \
+                        "The sections are [server], [cas], [auth], [authorizer], [hub], [git], \
+                         [storage] and [index]. \
                          {DOCS}"
                     )
                 }
             },
             None => {
                 format!(
-                    "Put keys in a [server], [cas], [auth], [authorizer], [hub], [git] or \
-                     [storage] section. \
+                    "Put keys in a [server], [cas], [auth], [authorizer], [hub], [git], \
+                     [storage] or [index] section. \
                      {DOCS}"
                 )
             }
@@ -1001,6 +1012,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
     };
     let storage = storage(c, transfer_key_explicit);
     let authorizer = authorizer(c);
+    let index = index(c);
     let hub = hub(c, max_token_lifetime)?;
     let git = git(c, data_dir.as_deref());
 
@@ -1041,6 +1053,7 @@ fn check(c: &mut Checker<'_>, overrides: &Overrides) -> Option<Config> {
         storage_url: storage.as_ref()?.url.clone(),
         storage_credentials_file: storage.as_ref()?.credentials_file.clone(),
         storage_options: storage?.options,
+        index: index?,
     })
 }
 
@@ -1167,6 +1180,137 @@ fn authorizer(c: &mut Checker<'_>) -> Option<AuthorizerSection> {
             deny_ttl: deny_ttl?,
         }),
     })
+}
+
+/// `[index]`, checked: the Postgres database of the index (ruling M3-R2).
+#[derive(Debug, Clone)]
+pub struct PostgresConfig {
+    /// The database, as a `postgres://` URL without a password.
+    pub url: Url,
+    /// A file holding the password, mode `0600`; without it the password
+    /// comes from `PGPASSWORD`, if the server needs one.
+    pub password_file: Option<PathBuf>,
+    /// The most connections this node opens.
+    pub max_connections: u32,
+}
+
+/// `index.max_connections`'s default: four per CPU (ruling M3-R2), within
+/// its bounds.
+fn default_index_connections() -> u32 {
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    u32::try_from(cpus.saturating_mul(4))
+        .unwrap_or(u32::MAX)
+        .clamp(2, 1024)
+}
+
+/// `[index]`. Unset, the index is SQLite in the data directory, which one
+/// host serves; `url = "postgres://…"` keeps it in a Postgres database that
+/// every node shares. The password never sits in the configuration: it
+/// comes from `password_file` or `PGPASSWORD`.
+#[allow(
+    clippy::option_option,
+    reason = "`None` is a problem, `Some(None)` the SQLite default"
+)]
+fn index(c: &mut Checker<'_>) -> Option<Option<PostgresConfig>> {
+    const URL: &str = "index.url";
+    const PASSWORD: &str = "index.password_file";
+    const CONNECTIONS: &str = "index.max_connections";
+    let url = match c.raw.string(URL) {
+        None if c.raw.values.contains_key(URL) => None,
+        None => {
+            c.set(
+                URL,
+                "none: SQLite in server.data_dir (index.sqlite)",
+                &Source::Default,
+            );
+            Some(None)
+        }
+        Some((text, source)) => match Url::parse(&text) {
+            Ok(url) if url.password().is_some() => {
+                // The value names a password: it is never echoed back.
+                c.raw.problem(
+                    URL,
+                    Some(REDACTED.to_owned()),
+                    &source,
+                    "must not hold a password",
+                    "Remove the password from the URL and put it in a file of its own (mode \
+                     0600) named by index.password_file, or in PGPASSWORD.",
+                );
+                None
+            }
+            Ok(url)
+                if matches!(url.scheme(), "postgres" | "postgresql")
+                    && url.host_str().is_some_and(|host| !host.is_empty())
+                    && url.fragment().is_none() =>
+            {
+                c.set(URL, &text, &source);
+                Some(Some(url))
+            }
+            _ => {
+                c.raw.problem(
+                    URL,
+                    Some(text),
+                    &source,
+                    "must be a postgres:// URL naming the server, as in \
+                     postgres://openxet@db.example.com/openxet",
+                    "Leave it out to keep the index in SQLite in the data directory. Options \
+                     such as sslmode go in the query, as in ?sslmode=verify-full. See \
+                     docs/reference/config.md#index.",
+                );
+                None
+            }
+        },
+    };
+    let password_file = match c.raw.string(PASSWORD) {
+        Some((text, source)) if !text.is_empty() => {
+            c.set(PASSWORD, &text, &source);
+            Some(Some(PathBuf::from(text)))
+        }
+        Some((_, source)) => {
+            c.raw.problem(
+                PASSWORD,
+                Some(String::new()),
+                &source,
+                "must be a file path",
+                "Leave it out to take the password from PGPASSWORD, or name a file holding it.",
+            );
+            None
+        }
+        None if c.raw.values.contains_key(PASSWORD) => None,
+        None => Some(None),
+    };
+    let set_without_url = [PASSWORD, CONNECTIONS]
+        .into_iter()
+        .find(|key| c.raw.values.contains_key(*key));
+    let max_connections = int(
+        c,
+        CONNECTIONS,
+        default_index_connections(),
+        2..=1024,
+        "must be a whole number from 2 to 1024",
+        "Each node opens up to this many connections to Postgres. Keep the sum over every \
+         node below the server's max_connections.",
+    );
+    match url? {
+        None => match set_without_url {
+            Some(key) => {
+                c.raw.problem(
+                    key,
+                    None,
+                    &Source::Default,
+                    "only applies to a Postgres index",
+                    format!("Set index.url, or remove {key}."),
+                );
+                None
+            }
+            None => Some(None),
+        },
+        Some(url) => Some(Some(PostgresConfig {
+            url,
+            password_file: password_file?,
+            max_connections: max_connections?,
+        })),
+    }
 }
 
 /// The `[storage]` section, checked.
@@ -2784,6 +2928,80 @@ mod tests {
 
     /// `git.max_push_bytes` defaults to 10 GiB, takes a size, and refuses
     /// one below 1 MiB.
+    #[test]
+    fn the_index_is_sqlite_unless_a_postgres_url_is_set() {
+        let config = load_toml("", &[]).config.unwrap();
+        assert!(config.index.is_none());
+
+        let config = load_toml(
+            "[index]\nurl = \"postgres://openxet@db.example.com/openxet?sslmode=verify-full\"\n\
+             password_file = \"/etc/openxet/db-password\"\nmax_connections = 16\n",
+            &[],
+        )
+        .config
+        .unwrap();
+        let index = config.index.unwrap();
+        assert_eq!(
+            index.url.as_str(),
+            "postgres://openxet@db.example.com/openxet?sslmode=verify-full"
+        );
+        assert_eq!(
+            index.password_file.as_deref(),
+            Some(Path::new("/etc/openxet/db-password"))
+        );
+        assert_eq!(index.max_connections, 16);
+
+        let config = load_toml(
+            "",
+            &[("OPENXET_INDEX__URL", "postgresql://db.example.com/openxet")],
+        )
+        .config
+        .unwrap();
+        let index = config.index.unwrap();
+        assert_eq!(index.url.host_str(), Some("db.example.com"));
+        assert!((2..=1024).contains(&index.max_connections));
+    }
+
+    #[test]
+    fn index_settings_are_checked() {
+        for (toml, key) in [
+            (
+                "[index]\nurl = \"mysql://db.example.com/openxet\"\n",
+                "index.url",
+            ),
+            ("[index]\nurl = \"postgres:///openxet\"\n", "index.url"),
+            (
+                "[index]\nurl = \"postgres://db.example.com/openxet\"\nmax_connections = 1\n",
+                "index.max_connections",
+            ),
+            (
+                "[index]\nurl = \"postgres://db.example.com/openxet\"\npassword_file = \"\"\n",
+                "index.password_file",
+            ),
+            ("[index]\nmax_connections = 8\n", "index.max_connections"),
+            (
+                "[index]\npassword_file = \"/etc/openxet/db-password\"\n",
+                "index.password_file",
+            ),
+        ] {
+            let loaded = load_toml(toml, &[]);
+            assert_eq!(problem_keys(&loaded), [key], "{toml}");
+        }
+    }
+
+    /// A password in `index.url` is refused and never echoed back.
+    #[test]
+    fn an_index_url_with_a_password_is_refused_unechoed() {
+        let loaded = load_toml(
+            "[index]\nurl = \"postgres://openxet:hunter2@db.example.com/openxet\"\n",
+            &[],
+        );
+        assert_eq!(problem_keys(&loaded), ["index.url"]);
+        let shown = format!("{:?}", loaded.problems);
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("password_file"), "{shown}");
+    }
+
     #[test]
     fn max_push_bytes_is_a_bounded_size() {
         let config = load(None, env(&[]), &Overrides::default()).config.unwrap();

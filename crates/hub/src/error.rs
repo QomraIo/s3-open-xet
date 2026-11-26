@@ -617,9 +617,10 @@ fn with_url(body: HubErrorBody, url: &str) -> Response {
 impl From<IndexError> for HubError {
     fn from(e: IndexError) -> Self {
         match e {
-            IndexError::Database(_) | IndexError::Migrate(_) | IndexError::OpenLock { .. } => {
-                Self::Unavailable(Box::new(e))
-            }
+            IndexError::Database(_)
+            | IndexError::Busy(_)
+            | IndexError::Migrate(_)
+            | IndexError::OpenLock { .. } => Self::Unavailable(Box::new(e)),
             // Deleted while the request ran: it no longer exists.
             IndexError::UnknownRepo { .. } => Self::UnknownRepo,
             IndexError::LabelsChanged { repo } => Self::LabelsChanged {

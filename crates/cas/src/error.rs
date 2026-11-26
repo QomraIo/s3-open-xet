@@ -363,10 +363,12 @@ impl From<IndexError> for CasError {
     fn from(e: IndexError) -> Self {
         match e {
             IndexError::UnknownXorb { xorb } => Self::UnknownXorb { xorb },
-            IndexError::Database(_) | IndexError::Migrate(_) => Self::Unavailable {
-                component: "index",
-                source: e.into(),
-            },
+            IndexError::Database(_) | IndexError::Busy(_) | IndexError::Migrate(_) => {
+                Self::Unavailable {
+                    component: "index",
+                    source: e.into(),
+                }
+            }
             // A corrupt row or invalid input stays wrong on retry.
             IndexError::Corrupt(_) | IndexError::InvalidInput(_) => Self::internal(e),
             // A variant added upstream (or the test-only injected fault) is

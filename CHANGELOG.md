@@ -16,6 +16,12 @@ in CI.
 
 ### Added in M3
 
+- Keep the index in Postgres: `[index] url = "postgres://…"`, with the
+  password in `index.password_file` or `PGPASSWORD`, never the URL. Every
+  node connected to the database serves the same repositories, and your
+  own services can read it with a read-only role
+  ([`[index]`](docs/reference/config.md#index)). `serve` creates the
+  tables on start; SQLite in the data directory stays the default.
 - Keep the bucket in S3 or an S3-compatible store (MinIO, R2, Garage):
   `storage.url = "s3://bucket/prefix"`, with `object_store`'s options
   under `[storage.options]` and credentials from the environment, never

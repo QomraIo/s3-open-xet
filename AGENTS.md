@@ -253,7 +253,10 @@ flat-disk and build-speed gate, then step 3 (the mount) after its plan.
 M3 follows: production backends (Postgres; S3, GCS and Azure), OIDC and the
 webhook authorizer, OpenXet-issued tokens and rate limits, per design §12
 and `docs/superpowers/plans/2026-11-05-m3-production-backends.md`,
-interleaved before the workspace steps that need it. ADR 0001 decides to build from
+interleaved before the workspace steps that need it. Shipped from M3 so
+far: the Postgres index (`[index] url`, Tasks 3 and 4), S3 buckets
+(`openxet storage setup`) and the webhook authorizer (`[authorizer]`).
+ADR 0001 decides to build from
 scratch on `xet-core`'s crates (after evaluating existing Xet servers;
 see `docs/competitive-matrix.md`).
 
@@ -274,6 +277,7 @@ the machine, in `docs/reference/benchmarks.md`.
 cargo build                                                # build the workspace
 scripts/fetch-reference-files.sh                           # fetch + verify golden-test fixtures (once)
 cargo nextest run --workspace                              # run all tests
+OPENXET_TEST_POSTGRES_URL=postgres://… cargo nextest run -p openxet-index -E 'binary(postgres_conformance) | test(/postgres::/)' # the Postgres index against the conformance suite; each case creates its own database (CI gate: postgres)
 cargo nextest run --release -p openxet-protocol -E 'binary(file_hash_streaming)' # incremental file hash, release build (CI gate)
 cargo nextest run --release -p openxet-cas -E 'binary(latency_gate)' --no-capture # reconstruction p99 < 50 ms, release build, quiet machine (CI gate, absolute on main)
 OPENXET_LATENCY_GATE=measure OPENXET_LATENCY_GATE_BUILD=$(git rev-parse HEAD) cargo nextest run --release -p openxet-cas -E 'binary(latency_gate)' --no-capture # the same, printing the JSON lines without asserting (CI, on a pull request: base, then head)

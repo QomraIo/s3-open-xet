@@ -31,7 +31,7 @@ use openxet_client::STATIC_TOKEN_EXP;
 use openxet_git::Engine;
 use openxet_http::compose;
 use openxet_hub::{HubState, SharedMemory};
-use openxet_index::SqliteIndex;
+use openxet_index::{HubIndex, PgConnectOptions, PostgresIndex, SqliteIndex};
 use openxet_storage::{Bucket, LocalBucket, ObjectBucket, StorageError, create_private_dir_all};
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -402,17 +402,8 @@ async fn open(
     authorizer: Arc<dyn Authorizer>,
 ) -> Result<(AppState, HubState, Option<Zeroizing<String>>), CliError> {
     let dir = &config.data_dir;
-    prepare_data_dir(dir)?;
-    let index = SqliteIndex::open(&dir.join(INDEX_FILE))
-        .await
-        .map_err(|err| {
-            CliError::new(
-                "index",
-                format!("could not open the index in {}: {err}", dir.display()),
-                "Check that the data directory is writable and that no other openxet process \
-                 uses it with an incompatible version. The index can be rebuilt from the bucket.",
-            )
-        })?;
+    prepare_data_dir(dir, config.index.is_none())?;
+    let index = open_index(config).await?;
     let bucket = open_bucket(config).await?;
     let key = transfer_key(config)?;
     let verify_keys = transfer_verify_keys(config)?;
@@ -445,7 +436,6 @@ async fn open(
         .map_err(|err| CliError::new("config", err.to_string(), "Fix [auth]."))?;
         (Arc::new(auth), Some(token))
     };
-    let index = Arc::new(index);
     let engine = Engine::start(
         Arc::clone(&index) as _,
         Arc::clone(&bucket) as _,
@@ -486,6 +476,64 @@ async fn open(
 /// at `storage.url` once it passes the conditional-create probe (ADR 0015
 /// item 6), so a node never takes traffic on a store that could let two
 /// writers' registration records diverge.
+/// Opens the index: SQLite in the data directory, or with `[index] url`
+/// the Postgres database every node shares (ruling M3-R2), migrating its
+/// schema first in either case.
+pub(crate) async fn open_index(config: &Config) -> Result<Arc<dyn HubIndex>, CliError> {
+    let dir = &config.data_dir;
+    let Some(pg) = &config.index else {
+        let index = SqliteIndex::open(&dir.join(INDEX_FILE))
+            .await
+            .map_err(|err| {
+                CliError::new(
+                    "index",
+                    format!("could not open the index in {}: {err}", dir.display()),
+                    "Check that the data directory is writable and that no other openxet \
+                     process uses it with an incompatible version. The index can be rebuilt \
+                     from the bucket.",
+                )
+            })?;
+        return Ok(Arc::new(index));
+    };
+    let mut options: PgConnectOptions = pg.url.as_str().parse().map_err(|err| {
+        CliError::new(
+            "config",
+            format!("index.url is not a Postgres URL: {err}"),
+            "Fix index.url, as in postgres://openxet@db.example.com/openxet.",
+        )
+    })?;
+    if let Some(file) = &pg.password_file {
+        let password = secret::read(file)?.ok_or_else(|| {
+            CliError::new(
+                "no_key",
+                format!("the password file {} does not exist", file.display()),
+                "Write the database password to it (mode 0600), or remove index.password_file \
+                 to take it from PGPASSWORD.",
+            )
+        })?;
+        options = options.password(password.trim_end_matches(['\n', '\r']));
+    }
+    // The URL holds no password (`config` refuses one), so it can be shown.
+    let shown = pg.url.as_str();
+    let index = PostgresIndex::connect(options, pg.max_connections)
+        .await
+        .map_err(|err| {
+            CliError::new(
+                "index",
+                format!("could not open the index at {shown}: {err}"),
+                "Check that this node reaches the database, that the user may connect to it and \
+                 create tables (index.password_file or PGPASSWORD for the password), and that \
+                 no node runs an incompatible version. The index can be rebuilt from the bucket.",
+            )
+        })?;
+    tracing::info!(
+        index = shown,
+        max_connections = pg.max_connections,
+        "opened the Postgres index"
+    );
+    Ok(Arc::new(index))
+}
+
 async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
     let dir = &config.data_dir;
     let Some(url) = &config.storage_url else {
@@ -633,7 +681,9 @@ pub(crate) const BUCKET_DIR: &str = "bucket";
 /// file's mode). Warns if an existing directory is open to other users:
 /// the bucket holds every scope's data, readable there without a
 /// credential.
-fn prepare_data_dir(dir: &Path) -> Result<(), CliError> {
+/// Creates the data directory if needed and, for a SQLite index
+/// (`sqlite`), its database file with mode `0600` before SQLite opens it.
+fn prepare_data_dir(dir: &Path, sqlite: bool) -> Result<(), CliError> {
     let unwritable = |err: io::Error| {
         CliError::new(
             "data_dir",
@@ -655,6 +705,9 @@ fn prepare_data_dir(dir: &Path) -> Result<(), CliError> {
         secret::sweep_stale_temps(dir);
     } else {
         create_private_dir_all(dir).map_err(unwritable)?;
+    }
+    if !sqlite {
+        return Ok(());
     }
     match secret::create_new_file(&dir.join(INDEX_FILE), 0o600) {
         Ok(_) => Ok(()),

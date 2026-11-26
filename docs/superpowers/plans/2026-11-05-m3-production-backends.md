@@ -562,6 +562,22 @@ pub async fn run_git<F: Fixture>(f: &F);
 
 ### Task 3: Postgres index, CAS tables
 
+**Status (2026-11-26):** Tasks 3 and 4 shipped together as
+`feat(index): keep the index in Postgres`, selected by `[index] url`. They
+differ from this plan in four ways:
+
+- What SQLite's `BEGIN IMMEDIATE` serializes, Postgres serializes per
+  repository with a transaction-scoped advisory lock rather than `SELECT …
+  FOR UPDATE` on the repository row, so a pack-deletion claim on a deleted
+  repository, which has no row to lock, is serialized too.
+- After three retried serialization failures or deadlocks, `IndexError::Busy`
+  is answered through the existing `503` for an unavailable index, not a
+  code of its own with `Retry-After`.
+- `[index]` has `password_file` (or `PGPASSWORD`), and refuses a password in
+  `url`; `read_url` waits for Task 8. Labels are `JSONB`.
+- The Postgres variant of `commit_throughput` (Task 3, step 5) isn't run yet.
+
+
 **Files:**
 - Create: `crates/index/src/postgres.rs`, `crates/index/migrations-postgres/0001_init.sql` (the end state of SQLite's 0001 to 0007, partitioned per M3-R2), `crates/index/tests/postgres_conformance.rs`
 - Modify: `crates/index/Cargo.toml` (sqlx `postgres` feature), `crates/index/src/lib.rs` (`PostgresIndex`, `IndexError::Busy`), `.github/workflows/ci.yml` (a `postgres:17` service on the `rust` job, `OPENXET_TEST_POSTGRES_URL`)

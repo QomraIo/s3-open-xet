@@ -55,7 +55,7 @@ unit: `KiB`, `MiB`, `GiB` or `TiB`, such as `512MiB` or `2GiB`.
 | --- | ------- | ------ | ------- |
 | `bind` | `127.0.0.1:8080` | an IP address and port | Where to listen. `0.0.0.0:8080` or `[::]:8080` listens on every interface and then needs `public_url`. `hf_xet`'s default CAS endpoint is `http://localhost:8080`. |
 | `public_url` | `http://` and the bound address | absolute `http` or `https` URL of an origin root | The URL clients reach the server at. Every transfer URL is built from it. |
-| `data_dir` | `./openxet-data` | a directory | Holds `index.sqlite`, `bucket/`, `transfer.key`, `cas-token.key`, by default the Git cache `git-cache/` and, in dev mode, `dev-token`. Its filesystem must support hard links (ext4, XFS, Btrfs, ZFS, APFS, NTFS; not FAT or exFAT): the bucket writes its records with them, and `serve` refuses to start without them. |
+| `data_dir` | `./openxet-data` | a directory | Holds `index.sqlite` (unless [`[index]`](#index) sets Postgres), `bucket/`, `transfer.key`, `cas-token.key`, by default the Git cache `git-cache/` and, in dev mode, `dev-token`. Its filesystem must support hard links (ext4, XFS, Btrfs, ZFS, APFS, NTFS; not FAT or exFAT): the bucket writes its records with them, and `serve` refuses to start without them. |
 | `log_format` | `text` | `text` or `json` | Log lines on stderr. |
 | `log_level` | `info` | `error`, `warn`, `info`, `debug` or `trace` | OpenXet's own log level. Other libraries log warnings and errors only. `debug` logs one line per request. |
 | `header_read_timeout` | `30s` | `1s` to `5m` | How long a connection may take to send a request line and headers. It also closes a keep-alive connection that sits idle this long; clients open a new one. |
@@ -273,7 +273,8 @@ local bucket in `server.data_dir/bucket`. With `url`, it is a bucket in
 S3 or an S3-compatible store (MinIO, Cloudflare R2, Garage and others),
 with the local bucket's key layout under the URL's prefix, so a local
 bucket copied with `aws s3 sync bucket/ s3://bucket/prefix` is read as it
-is. The index (`index.sqlite`) and the Git cache stay on the node.
+is. The Git cache stays on the node, and so does the index unless
+[`[index]`](#index) puts it in Postgres.
 
 | Key | Default | Bounds | Meaning |
 | --- | ------- | ------ | ------- |
@@ -344,6 +345,83 @@ AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… openxet serve --config openxet.t
 
 As environment variables: `OPENXET_STORAGE__URL=s3://openxet/prod` and
 `OPENXET_STORAGE__OPTIONS='{ endpoint = "http://127.0.0.1:9000", allow_http = true }'`.
+
+### `[index]`
+
+The index: which xorbs, files and repositories exist, their refs and
+packs, and the audit log. It is rebuildable from the bucket. Unset, it is
+SQLite in `server.data_dir/index.sqlite`, which one host serves. With
+`url`, it is a Postgres database that every node connected to it shares,
+so several nodes on one [`[storage]`](#storage) bucket serve the same
+repositories, and your own services can read it.
+
+| Key | Default | Bounds | Meaning |
+| --- | ------- | ------ | ------- |
+| `url` | none | `postgres://` or `postgresql://` naming a host, without a password | The database. Connection options go in the query, such as `?sslmode=verify-full`. |
+| `password_file` | none | a file path, mode `0600` | The database password. Unset, it comes from `PGPASSWORD` when the server asks for one. |
+| `max_connections` | 4 per CPU | 2 to 1024 | The most connections this node opens. Keep the sum over every node under the server's own `max_connections`. |
+
+A password in `url` is refused, so it never sits in the configuration or
+its error messages. It needs Postgres 12 or newer, for foreign keys onto
+hash-partitioned tables; it is tested on Postgres 17.
+
+Create the database and a user that owns it, then point `url` at it:
+
+```bash
+createdb openxet
+psql openxet -c "CREATE ROLE openxet LOGIN PASSWORD '…'" -c "ALTER DATABASE openxet OWNER TO openxet" -c "ALTER SCHEMA public OWNER TO openxet"
+```
+
+```toml
+[index]
+url = "postgres://openxet@db.example.com/openxet?sslmode=verify-full"
+password_file = "/etc/openxet/db-password"
+```
+
+On start, `serve` creates or updates the tables, holding a Postgres
+advisory lock so nodes starting together apply each change once. Writes
+that collide between nodes are retried, and answered `503` if they keep
+colliding.
+
+As environment variables: `OPENXET_INDEX__URL=postgres://…` and
+`OPENXET_INDEX__PASSWORD_FILE=/etc/openxet/db-password`, or
+`PGPASSWORD` for the password itself.
+
+#### Reading the index from your own services
+
+An [authorizer](#authorizer) or a dashboard can read the index
+directly. Give it a role of its own that may only read, and only the
+tables it needs:
+
+```sql
+CREATE ROLE authorizer LOGIN PASSWORD '…';
+GRANT CONNECT ON DATABASE openxet TO authorizer;
+GRANT USAGE ON SCHEMA public TO authorizer;
+GRANT SELECT ON repos, refs, audit_log TO authorizer;
+```
+
+The tables a service is most likely to read:
+
+| Table | What a row is |
+| ----- | ------------- |
+| `repos` | A repository: `namespace`, `name`, `private`, `labels` (a JSON array), `created_at` (Unix seconds). `id` is the 16 bytes of a UUIDv7. |
+| `refs` | A branch or tag: `repo` (a `repos.id`), `name` (`refs/heads/main`), `oid` (20 bytes). |
+| `ref_log` | Every ref change, with the `actor` that made it and when (`at`). |
+| `audit_log` | Append-only: `actor`, `action`, `repo` and a JSON `detail` for labels, deletes and purges. |
+
+For example, the repositories of a namespace and their labels:
+
+```sql
+SELECT name, private, labels FROM repos WHERE namespace = 'acme' ORDER BY name;
+```
+
+These tables are the index's own, not an API. By
+[ADR 0017](../adr/0017-schema-compatibility-for-rolling-upgrades.md),
+a release adds tables and columns rather than changing them, and drops
+what it no longer uses only in a marked release, which the
+[changelog](../changelog.md) names. Never write to them:
+OpenXet expects to be their only writer, and rebuilds them from the
+bucket.
 
 ## Dev mode
 

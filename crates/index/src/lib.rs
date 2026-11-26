@@ -7,15 +7,17 @@
 //! §5.3), and every row can be recomputed from stored xorbs and shards and
 //! the bucket's registration and xorb-owner records (ruling M1-R37).
 //! Nodes are stateless, so implementations must stay correct with several
-//! processes writing at once; SQLite ships now and Postgres comes behind the
-//! same traits in M3 (design §5.2, §5.8). Every backend passes the same
+//! processes writing at once. SQLite serves one host; Postgres serves many
+//! nodes sharing one database (design §5.2, §5.8, ruling M3-R2). Every backend passes the same
 //! conformance suite (`conformance`, with the `test-support` feature).
 
 #![forbid(unsafe_code)]
 
+mod common;
 #[cfg(feature = "test-support")]
 pub mod conformance;
 mod git;
+mod postgres;
 #[cfg(feature = "test-support")]
 mod rebuild;
 mod repos;
@@ -30,10 +32,12 @@ pub use git::{
     CommitError, CommitTx, GitStore, Lease, Pack, PackDeletion, PackRecord, PackState, RefLogRow,
     RefUpdate, Reindexed, RepackPublish, Snapshot, Unplaced, UnplacedKind,
 };
+pub use postgres::PostgresIndex;
 #[cfg(feature = "test-support")]
 pub use rebuild::{FileRow, RebuildError, ScopeTables, rebuild_scope_tables};
 pub use repos::{AuditEntry, FileSummary, Page, Repo, RepoFilter, Repos, XetFile};
 pub use sqlite::SqliteIndex;
+pub use sqlx::postgres::PgConnectOptions;
 pub use types::{
     ChunkLayout, ChunkTable, FileRecord, NewFile, Oid, PackId, ParseIdError, Registrant, RepoId,
     Scope, Term, TermBytes, Visibility,
@@ -282,10 +286,15 @@ impl<T: Index + Repos + GitStore> HubIndex for T {}
 pub enum IndexError {
     /// The database could not be opened, read or written.
     #[error(
-        "index database error; check that the data directory is writable and the disk is not \
-         full, then retry"
+        "index database error; check that the database is reachable (for SQLite, that the data \
+         directory is writable and the disk is not full), then retry"
     )]
     Database(#[source] sqlx::Error),
+    /// Concurrent writers kept conflicting (Postgres serialization failures
+    /// or deadlocks), and the retries ran out (ruling M3-R2). Retrying
+    /// later succeeds once the contention passes.
+    #[error("the index is busy with concurrent writes; retry in a moment")]
+    Busy(#[source] sqlx::Error),
     /// The lock that serializes opening the index between processes could
     /// not be taken.
     #[error(

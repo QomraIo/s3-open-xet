@@ -205,6 +205,41 @@ jobs:
         if: "!cancelled() && matrix.os == 'ubuntu-latest'"
         run: cargo nextest run --locked --release -p openxet-git -E 'binary(fetch_gate) | binary(thin_bases_budget)' --no-capture
 
+  # Ruling M3-R2: the Postgres index passes the same conformance suite as
+  # SQLite. Service containers run only on Linux runners, so this is a job
+  # of its own rather than a step of the rust matrix.
+  postgres:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: openxet
+          POSTGRES_PASSWORD: openxet
+          POSTGRES_DB: openxet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openxet"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      OPENXET_TEST_POSTGRES_URL: postgres://openxet:openxet@127.0.0.1:5432/openxet
+      OPENXET_REQUIRE_SERVICES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: nextest
+      - run: cargo nextest run --locked -p openxet-index -E 'binary(postgres_conformance) | test(/postgres::/)'
+
   deny:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest

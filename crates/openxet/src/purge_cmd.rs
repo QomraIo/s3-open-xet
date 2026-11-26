@@ -12,19 +12,20 @@
 
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openxet_client::ClientError;
-use openxet_index::{AuditEntry, Index as _, IndexError, Repos as _, SqliteIndex};
+use openxet_index::{AuditEntry, HubIndex, IndexError, SqliteIndex};
 use openxet_protocol::{MerkleHash, hash_from_hex};
 use openxet_storage::{Bucket as _, Key, LocalBucket, PurgeRecord, StorageError};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::config::{self, Overrides};
+use crate::config::{self, Config, Overrides};
 use crate::error::CliError;
 use crate::output::{HumanDisplay, Output};
-use crate::serve::{BUCKET_DIR, INDEX_FILE};
+use crate::serve::{self, BUCKET_DIR, INDEX_FILE};
 use crate::transfer_cmd::{client_error, usage_error};
 
 /// `openxet purge`'s options.
@@ -116,12 +117,13 @@ pub fn run(args: &PurgeArgs, output: Output) -> Result<(), CliError> {
                 "Check the process's thread and file-descriptor limits.",
             )
         })?;
-    let purged = runtime.block_on(purge(&config.data_dir, file, args))?;
+    let purged = runtime.block_on(purge(&config, file, args))?;
     output.emit(&purged).map_err(|err| CliError::output(&err))
 }
 
-async fn purge(data_dir: &Path, file: MerkleHash, args: &PurgeArgs) -> Result<Purged, CliError> {
-    let index = open_index(data_dir).await?;
+async fn purge(config: &Config, file: MerkleHash, args: &PurgeArgs) -> Result<Purged, CliError> {
+    let data_dir = &config.data_dir;
+    let index = open_index(config).await?;
     let present = index
         .file_scope_count(&file)
         .await
@@ -321,9 +323,14 @@ fn confirm(hash: &str, present: u64) -> Result<(), CliError> {
 const DATA_DIR_HINT: &str = "Pass the server's `--config`, or `--data-dir` with the directory \
      `openxet serve` uses (it prints it on startup).";
 
-/// The server's index. A data directory without one was never served
-/// from: it is refused rather than given a new, empty index.
-async fn open_index(dir: &Path) -> Result<SqliteIndex, CliError> {
+/// The server's index: its Postgres database, or the SQLite file in the
+/// data directory. A data directory without one was never served from: it
+/// is refused rather than given a new, empty index.
+async fn open_index(config: &Config) -> Result<Arc<dyn HubIndex>, CliError> {
+    if config.index.is_some() {
+        return serve::open_index(config).await;
+    }
+    let dir = &config.data_dir;
     let path = dir.join(INDEX_FILE);
     if !path.is_file() {
         return Err(CliError::new(
@@ -332,13 +339,14 @@ async fn open_index(dir: &Path) -> Result<SqliteIndex, CliError> {
             DATA_DIR_HINT,
         ));
     }
-    SqliteIndex::open(&path).await.map_err(|err| {
+    let index = SqliteIndex::open(&path).await.map_err(|err| {
         CliError::new(
             "index",
             format!("could not open the index in {}: {err}", dir.display()),
             "Check that you may write the data directory, as the server's user does.",
         )
-    })
+    })?;
+    Ok(Arc::new(index))
 }
 
 fn open_bucket(dir: &Path) -> Result<LocalBucket, CliError> {

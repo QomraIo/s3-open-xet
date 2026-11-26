@@ -1,23 +1,28 @@
 # Quickstart: S3 with your own authorization
 
-<!-- description: Run an OpenXet server that keeps its data in an Amazon S3 bucket and asks your own service who may read, write, create and delete, then watch it allow and refuse with the stock hf CLI. -->
+<!-- description: Run an OpenXet server that keeps its files in an Amazon S3 bucket and its index in Postgres, and asks your own service who may read, write, create and delete; watch it allow and refuse with the stock hf CLI, then read the index as your service would. -->
 
-Run an OpenXet server that keeps its data in an Amazon S3 bucket and
-lets your own service decide who may do what. You connect the server to
-S3, start a small authorization service, connect the server to it, and
-then try an upload that your service allows, two actions it refuses,
-and what happens when it is down.
+Run an OpenXet server that keeps its files in an Amazon S3 bucket and
+its index in Postgres, and lets your own service decide who may do what.
+You connect the server to S3 and to Postgres, start a small
+authorization service, connect the server to it, and then try an upload
+that your service allows, two actions it refuses, and what happens when
+it is down. Last, you read the index from Postgres as your service
+can.
 
 Run the blocks in one terminal, in an empty directory. This page doesn't
 run in CI, since it needs your AWS account. Already followed the
 [S3 quickstart](quickstart-s3.md)? Your server is connected to S3:
-skip to [step 4](#4-write-your-authorization-service).
+skip to [step 4](#4-keep-the-index-in-postgres).
 
 ## 1. Install
 
 There is no release yet, so `openxet` is built from source. This needs
-[Rust](https://rustup.rs) 1.97 or newer, Python 3.10 or newer and `git`
-2.37 or newer. The `hf` command line goes into a virtual environment:
+[Rust](https://rustup.rs) 1.97 or newer, Python 3.10 or newer, `git`
+2.37 or newer, and Postgres 12 or newer running on this machine, with
+`createdb` and `psql` on your `PATH`. On macOS,
+`brew install postgresql@17 && brew services start postgresql@17` sets
+that up. The `hf` command line goes into a virtual environment:
 
 ```bash install
 cargo install --locked --git https://github.com/stubbi/openxet openxet
@@ -90,7 +95,29 @@ stores the key in a file only you can read, never in the configuration.
 The [S3 quickstart](quickstart-s3.md#3-connect-openxet-to-s3) explains
 each check, and how to pass the key without a terminal.
 
-## 4. Write your authorization service
+## 4. Keep the index in Postgres
+
+The bucket holds the files. The index says which files, repositories and
+branches exist, and by default it is a SQLite file next to the server.
+Put it in Postgres instead, where every server you add later shares it
+and your own services can read it:
+
+```bash
+createdb openxet
+cat >> ~/.config/openxet/openxet.toml <<'EOF'
+
+[index]
+url = "postgres://localhost/openxet"
+EOF
+```
+
+The URL names no user, so Postgres is asked as your own user, as `psql`
+does. The server creates its tables the first time it starts. For a
+database that needs a password, keep it out of the URL: put it in a file
+only you can read and name the file with `password_file`, or set
+`PGPASSWORD` ([`[index]`](reference/config.md#index)).
+
+## 5. Write your authorization service
 
 Before every read, write, create or delete, OpenXet will `POST` your
 service a question like this one, with the user's own token in the
@@ -158,7 +185,7 @@ python3 authorize.py > authorize.log 2>&1 &
 AUTH=$!
 ```
 
-## 5. Connect OpenXet to your service
+## 6. Connect OpenXet to your service
 
 ```bash
 openxet authorizer setup http://127.0.0.1:8000/authorize
@@ -189,7 +216,7 @@ From now on your service decides everything, including for the dev
 token. The URL must be `https://`, or `http://` to this machine as here.
 For a service elsewhere, run it behind HTTPS and pass its `https://` URL.
 
-## 6. Start the server
+## 7. Start the server
 
 ```bash
 openxet serve --config ~/.config/openxet/openxet.toml --port 0 --json > serve.json 2> serve.log &
@@ -198,12 +225,12 @@ until [ -s serve.json ]; do sleep 0.1; done
 ```
 
 Before it takes any request, the server checks the bucket again with the
-stored key. The configuration has no `[auth]` section, so the server runs
+stored key, and creates its tables in Postgres. The configuration has no `[auth]` section, so the server runs
 in [dev mode](reference/config.md#dev-mode): one token, for the user
 `dev`, which `--json` prints with the endpoint once the server is ready.
 The token proves who the user is; your service decides what they may do.
 
-## 7. Upload and download: allowed
+## 8. Upload and download: allowed
 
 Point `hf` at the server, make a folder with a README and a 4 MiB file,
 and upload it to the repository `dev/demo`:
@@ -249,7 +276,7 @@ service was asked to `create` in the namespace `dev`, then to `read` and
 allow for the same user and token for up to 30 seconds, so a download
 doesn't ask once per file.
 
-## 8. Write elsewhere and delete: refused
+## 9. Write elsewhere and delete: refused
 
 Your rules let `dev` change only its own namespace, and nobody delete.
 Try both:
@@ -283,7 +310,7 @@ Your service refused, so OpenXet refused, and `dev/demo` is still there.
 Deleting a branch or a tag is asked the same way, as
 `dev/demo/branch/NAME` or `dev/demo/tag/NAME`.
 
-## 9. Your service is down: refused too
+## 10. Your service is down: refused too
 
 Stop your service, wait out the 30 seconds an allow is reused, and ask
 the server for the README:
@@ -316,7 +343,7 @@ python3 authorize.py >> authorize.log 2>&1 &
 AUTH=$!
 ```
 
-## 10. Look in the bucket
+## 11. Look in the bucket
 
 ```bash
 aws s3 ls "s3://$BUCKET/openxet/" --recursive
@@ -328,7 +355,41 @@ registered (`shards/`, `registrations/`, `xorb-owners/`), the repository's
 Git history (`repos/`) and the conditional-create checks (`probe/`). Your
 authorization service stores nothing there: it only answers questions.
 
-## 11. Stop
+## 12. Look in the index
+
+Your service can read the index too, to decide by what is in it: who
+owns a repository, its labels, whether it is private. Give it a role of
+its own that may only read, and only the tables it needs:
+
+```bash
+psql openxet -c "CREATE ROLE authorizer LOGIN" -c "GRANT SELECT ON repos, refs, audit_log TO authorizer"
+psql -U authorizer openxet -c "SELECT namespace, name, private, labels FROM repos"
+```
+
+```text
+ namespace | name | private |  labels
+-----------+------+---------+-----------
+ dev       | demo | f       | ["model"]
+(1 row)
+```
+
+`dev/demo` is there and `acme/demo` isn't, as your service decided. The
+role can't change anything, nor read what you didn't grant:
+
+```bash
+psql -U authorizer openxet -c "DELETE FROM repos"
+```
+
+```text
+ERROR:  permission denied for table repos
+```
+
+Your service would run the same queries with a Postgres library, such as
+`psycopg` in Python, connecting as `authorizer`. The tables are described
+in [reading the index](reference/config.md#reading-the-index-from-your-own-services).
+They belong to OpenXet: read them, never write them.
+
+## 13. Stop
 
 ```bash
 kill "$SERVER" "$AUTH"
@@ -336,11 +397,12 @@ kill "$SERVER" "$AUTH"
 
 To run them again, start `authorize.py` first, then
 `openxet serve --config ~/.config/openxet/openxet.toml` from this same
-directory: the server keeps its index in `openxet-data` here, while
-every file stays in S3.
+directory: the index stays in Postgres and every file in S3, while the
+server keeps a Git cache in `openxet-data` here.
 
 When you are done trying, delete the `openxet/` prefix or the bucket in
-the S3 console, so it stops costing storage.
+the S3 console, so it stops costing storage, and drop the database with
+`dropdb openxet`.
 
 ## Make it yours
 
@@ -348,8 +410,9 @@ the S3 console, so it stops costing storage.
   `write`, `create` or `delete`), the `resource` and its parts
   (`namespace`, `name`, `path`), and who the user is (`subject`,
   `claims`); `token` is their bearer token, to look up in your own
-  system. The [authorizer reference](reference/authorizer.md) lists which
-  request asks which action.
+  system, and you can look the repository up in the index (step 12). The
+  [authorizer reference](reference/authorizer.md) lists which request
+  asks which action.
 - **How long answers are reused.** Add `allow_ttl` and `deny_ttl` to
   `[authorizer]` (30 and 5 seconds by default), or `"0s"` to ask every
   time; your service can also answer `{"allow": true, "ttl_seconds": 5}`.
@@ -365,8 +428,9 @@ the S3 console, so it stops costing storage.
 | Message | What to do |
 | ------- | ---------- |
 | `storage setup`: `… already sets storage.url` | The configuration is already connected to S3: go on with step 4. |
-| `authorizer setup`: `could not reach …` | Start `authorize.py` (step 4), check the URL and port, and run setup again. |
-| `authorizer setup`: `… already has an [authorizer]` | It is already connected: go on with step 6. To use another URL, remove the `[authorizer]` section and run setup again. |
+| `serve`: `could not open the index at postgres://…` | Start Postgres, check that `createdb openxet` ran, and that `psql openxet` connects as you. |
+| `authorizer setup`: `could not reach …` | Start `authorize.py` (step 5), check the URL and port, and run setup again. |
+| `authorizer setup`: `… already has an [authorizer]` | It is already connected: go on with step 7. To use another URL, remove the `[authorizer]` section and run setup again. |
 | `authorizer setup`: `the URL must be https://, or http:// to a loopback address` | Use `https://`, or `http://` to `127.0.0.1`, `::1` or `localhost`. |
 | Every request is `403` | Your service answers `false`. Check `authorize.log`: if everything is denied, the signature doesn't match, so check that `SECRET_FILE` is the file `authorizer setup` created and restart `authorize.py`. |
 | Every request is `503` | OpenXet gets no answer: check that `authorize.py` is running, and look for `authorizer_unavailable` in `serve.log`. |
@@ -377,6 +441,8 @@ error, with `--json` too, in [exit codes](reference/exit-codes.md).
 
 ## Next
 
+- [`[index]`](reference/config.md#index): the Postgres settings, and
+  the tables your services can read.
 - [Authorizer endpoint](reference/authorizer.md): the question and the
   answer field by field, and how to check the signature.
 - [`openxet authorizer setup`](reference/cli.md#openxet-authorizer-setup):

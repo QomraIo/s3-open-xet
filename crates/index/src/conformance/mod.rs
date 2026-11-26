@@ -2,8 +2,8 @@
 //! [`Repos`] and [`GitStore`] that holds for any backend, written once
 //! against a [`Fixture`] and run by each backend's test binary through
 //! [`index_conformance!`](crate::index_conformance). SQLite runs it in
-//! `crates/index/tests/sqlite_conformance.rs`; Postgres joins in M3 (ADR
-//! 0015). What only one backend can show (its file locks, its query plans,
+//! `crates/index/tests/sqlite_conformance.rs`, Postgres in
+//! `crates/index/tests/postgres_conformance.rs` (ADR 0015). What only one backend can show (its file locks, its query plans,
 //! its migrations of old databases) stays in that backend's own tests.
 //!
 //! Each case is a `pub async fn <name><F: Fixture>(f: &F)` in [`cas`],
@@ -37,6 +37,13 @@ pub trait Fixture: Send + Sync {
     /// Another handle on `of`'s database, with its own connections: a
     /// second node serving the same index.
     async fn second_handle(&self, of: &Self::Index) -> Self::Index;
+
+    /// Why this backend's cases can't run here, such as a database service
+    /// that isn't configured, or `None` to run them. A skipped case passes
+    /// and prints the reason.
+    fn skip_reason(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Runs `case` to completion on a multi-threaded runtime, so concurrent
@@ -174,6 +181,10 @@ macro_rules! index_conformance {
                 fn $case() {
                     $crate::conformance::block_on(async {
                         let fixture = super::$fixture();
+                        if let Some(reason) = $crate::conformance::Fixture::skip_reason(&fixture) {
+                            eprintln!("skipped: {reason}");
+                            return;
+                        }
                         $crate::conformance::$group::$case(&fixture).await;
                     });
                 }

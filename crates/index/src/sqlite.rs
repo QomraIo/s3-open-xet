@@ -4,6 +4,8 @@
 mod git;
 mod repos;
 
+pub(crate) use crate::common::{to_i64, to_u64};
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -16,15 +18,14 @@ use sqlx::sqlite::{
 };
 use sqlx::{AssertSqlSafe, Row, Sqlite, Transaction};
 
-#[cfg(feature = "fault-injection")]
-use crate::FAULT_AFTER_FIRST_FILE_SCOPE;
+use crate::common::{fault_point, term_bytes, to_usize, unknown_xorb_on_fk_violation};
 use crate::types::{
     TERM_LEN, decode_chunk_layout, decode_chunk_table, decode_layout_of_chunk_table,
     decode_term_bytes, decode_terms, encode_chunk_layout, encode_chunk_table, encode_term_bytes,
     encode_terms, hash_from,
 };
 use crate::{
-    ChunkLayout, ChunkTable, FileRecord, Index, IndexError, NewFile, Registrant, Term, TermBytes,
+    ChunkLayout, ChunkTable, FileRecord, Index, IndexError, NewFile, Registrant, TermBytes,
     Visibility,
 };
 
@@ -199,39 +200,6 @@ impl OpenLock {
     }
 }
 
-fn to_i64(value: u64, what: &str) -> Result<i64, IndexError> {
-    i64::try_from(value)
-        .map_err(|_| IndexError::InvalidInput(format!("{what} {value} is over i64::MAX")))
-}
-
-fn to_u64(value: i64, what: &str) -> Result<u64, IndexError> {
-    u64::try_from(value).map_err(|_| IndexError::Corrupt(format!("{what} is negative ({value})")))
-}
-
-fn to_usize(value: i64, what: &str) -> Result<usize, IndexError> {
-    usize::try_from(value)
-        .map_err(|_| IndexError::Corrupt(format!("{what} {value} is not a valid count")))
-}
-
-/// Fails `register_shard` after its first file for
-/// [`FAULT_AFTER_FIRST_FILE_SCOPE`].
-#[cfg(feature = "fault-injection")]
-fn fault_point(file_index: usize, scope: &str) -> Result<(), IndexError> {
-    if file_index == 0 && scope == FAULT_AFTER_FIRST_FILE_SCOPE {
-        return Err(IndexError::InjectedFault);
-    }
-    Ok(())
-}
-
-#[cfg(not(feature = "fault-injection"))]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "matches the fault-injection build"
-)]
-fn fault_point(_file_index: usize, _scope: &str) -> Result<(), IndexError> {
-    Ok(())
-}
-
 /// The first of `xorbs`, in order, that isn't visible to `tenant` under `vis`,
 /// read inside `tx` so the answer holds until it commits.
 async fn first_invisible(
@@ -263,18 +231,6 @@ async fn first_invisible(
         }
     }
     Ok(ordered.into_iter().find(|x| !visible.contains(x)))
-}
-
-/// Maps a foreign-key violation from writing a row that names `xorb` to
-/// [`IndexError::UnknownXorb`]: the xorb isn't stored, which retrying won't
-/// fix, so the generic database error would mislead.
-fn unknown_xorb_on_fk_violation(e: IndexError, xorb: MerkleHash) -> IndexError {
-    match e {
-        IndexError::Database(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => {
-            IndexError::UnknownXorb { xorb }
-        }
-        other => other,
-    }
 }
 
 /// The layouts of `xorbs` visible to `tenant` under `vis`, read on `conn`,
@@ -320,36 +276,6 @@ async fn layouts_in(
         }
     }
     Ok(layouts)
-}
-
-/// Each term's stored bytes, `[offsets[chunk_start], offsets[chunk_end])`
-/// in its xorb, from `layouts`, which hold every xorb `terms` name.
-fn term_bytes(
-    terms: &[Term],
-    layouts: &HashMap<MerkleHash, ChunkLayout>,
-) -> Result<Vec<(u32, u32)>, IndexError> {
-    terms
-        .iter()
-        .map(|t| {
-            let offsets = &layouts
-                .get(&t.xorb)
-                .ok_or(IndexError::UnknownXorb { xorb: t.xorb })?
-                .offsets;
-            match (
-                offsets.get(t.chunk_start as usize),
-                offsets.get(t.chunk_end as usize),
-            ) {
-                (Some(&start), Some(&end)) if start < end => Ok((start, end)),
-                _ => Err(IndexError::InvalidInput(format!(
-                    "a term names chunks {}..{} of xorb {}, which has {} chunks",
-                    t.chunk_start,
-                    t.chunk_end,
-                    t.xorb,
-                    offsets.len().saturating_sub(1)
-                ))),
-            }
-        })
-        .collect()
 }
 
 /// Inserts `(chunk, xorb)` dedup candidates, skipping ones already present.
