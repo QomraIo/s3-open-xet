@@ -1,6 +1,6 @@
 //! `openxet purge`: unregisters a file from every scope (ruling M2-R13),
-//! working on the server's own data directory, with or without the server
-//! running.
+//! working on the server's own index and bucket, as its configuration names
+//! them, with or without the server running.
 //!
 //! The bucket's purge record is written first, then the index rows go,
 //! then the audit row: the bucket is the source of truth (design §5.3), so
@@ -11,16 +11,17 @@
 //! collection finds them unreferenced.
 
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openxet_client::ClientError;
 use openxet_index::{AuditEntry, HubIndex, IndexError, SqliteIndex};
 use openxet_protocol::{MerkleHash, hash_from_hex};
-use openxet_storage::{Bucket as _, Key, LocalBucket, PurgeRecord, StorageError};
+use openxet_storage::{Bucket, Key, LocalBucket, PurgeRecord, StorageError};
 use serde::Serialize;
 use serde_json::json;
+use url::Url;
 
 use crate::config::{self, Config, Overrides};
 use crate::error::CliError;
@@ -122,15 +123,15 @@ pub fn run(args: &PurgeArgs, output: Output) -> Result<(), CliError> {
 }
 
 async fn purge(config: &Config, file: MerkleHash, args: &PurgeArgs) -> Result<Purged, CliError> {
-    let data_dir = &config.data_dir;
     let index = open_index(config).await?;
     let present = index
         .file_scope_count(&file)
         .await
         .map_err(|err| index_error(&err))?;
-    let bucket = open_bucket(data_dir)?;
+    let (bucket, place) = open_bucket(config).await?;
+    let bucket = bucket.as_ref();
     let key = Key::Purge(file);
-    let earlier = read_record(&bucket, &key, data_dir).await?;
+    let earlier = read_record(bucket, &key, &place).await?;
     // A record is permanent: one for a hash nothing holds would only skip
     // a later upload's registrations on a reindex.
     if present == 0 && earlier.is_none() {
@@ -179,11 +180,11 @@ async fn purge(config: &Config, file: MerkleHash, args: &PurgeArgs) -> Result<Pu
             let created = bucket
                 .create(&key, record.to_bytes())
                 .await
-                .map_err(|err| storage_error(data_dir, &err))?;
+                .map_err(|err| storage_error(&place, &err))?;
             if created {
                 (record, false)
             } else {
-                let stored = read_record(&bucket, &key, data_dir).await?;
+                let stored = read_record(bucket, &key, &place).await?;
                 (stored.unwrap_or(record), true)
             }
         }
@@ -218,20 +219,20 @@ enum Run {
 
 /// The purge record already in the bucket, if any.
 async fn read_record(
-    bucket: &LocalBucket,
+    bucket: &dyn Bucket,
     key: &Key,
-    data_dir: &Path,
+    place: &Place,
 ) -> Result<Option<PurgeRecord>, CliError> {
     let Some(bytes) = bucket
         .get(key)
         .await
-        .map_err(|err| storage_error(data_dir, &err))?
+        .map_err(|err| storage_error(place, &err))?
     else {
         return Ok(None);
     };
     PurgeRecord::from_bytes(key, &bytes)
         .map(Some)
-        .map_err(|err| storage_error(data_dir, &err))
+        .map_err(|err| storage_error(place, &err))
 }
 
 fn not_found(hash: &str) -> CliError {
@@ -349,7 +350,36 @@ async fn open_index(config: &Config) -> Result<Arc<dyn HubIndex>, CliError> {
     Ok(Arc::new(index))
 }
 
-fn open_bucket(dir: &Path) -> Result<LocalBucket, CliError> {
+/// Where the bucket is, for messages: the purge record must land in the
+/// bucket the server reads, or a reindex would restore the file.
+enum Place {
+    /// The local bucket in this data directory.
+    Local(PathBuf),
+    /// The object-store bucket `storage.url` names.
+    Object(Url),
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(dir) => write!(f, "the bucket in {}", dir.display()),
+            Self::Object(url) => write!(f, "the bucket at {url}"),
+        }
+    }
+}
+
+/// The server's bucket, as the configuration names it: with `storage.url`
+/// the object-store bucket, never a local one a data directory may still
+/// hold; otherwise the local bucket, which must exist, since a directory
+/// without one was never served from.
+async fn open_bucket(config: &Config) -> Result<(Arc<dyn Bucket>, Place), CliError> {
+    if let Some(url) = &config.storage_url {
+        return Ok((
+            serve::open_bucket(config).await?,
+            Place::Object(url.clone()),
+        ));
+    }
+    let dir = &config.data_dir;
     let path = dir.join(BUCKET_DIR);
     if !path.is_dir() {
         return Err(CliError::new(
@@ -358,18 +388,26 @@ fn open_bucket(dir: &Path) -> Result<LocalBucket, CliError> {
             DATA_DIR_HINT,
         ));
     }
-    LocalBucket::open(&path).map_err(|err| storage_error(dir, &err))
+    let place = Place::Local(dir.clone());
+    let bucket = LocalBucket::open(&path).map_err(|err| storage_error(&place, &err))?;
+    Ok((Arc::new(bucket), place))
 }
 
-fn storage_error(dir: &Path, err: &StorageError) -> CliError {
+fn storage_error(place: &Place, err: &StorageError) -> CliError {
+    let hint = match place {
+        Place::Local(_) => {
+            "Check that you may write the data directory, as the server's user does, and that \
+             its disk has space; then run the purge again."
+        }
+        Place::Object(_) => {
+            "Check the credentials (storage.credentials_file, or AWS_* in the environment) and \
+             that this machine reaches the store; then run the purge again."
+        }
+    };
     CliError::new(
         "storage",
-        format!(
-            "the bucket in {} failed: {err}; nothing was purged",
-            dir.display()
-        ),
-        "Check that you may write the data directory, as the server's user does, and that its \
-         disk has space; then run the purge again.",
+        format!("{place} failed: {err}; nothing was purged"),
+        hint,
     )
 }
 

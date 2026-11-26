@@ -325,9 +325,11 @@ openxet purge <HASH> [--config FILE] [--data-dir DIR] [--dry-run] [--yes] [--act
 Unregisters the file with Xet hash `HASH` from every scope that holds it,
 so no scope, repository or token can download it again, for content that
 must go: leaked credentials, personal data, a takedown. It works on the
-server's own data directory, from `--config` and `--data-dir` as `serve`
-reads them, and doesn't need the server running; a running server stops
-serving the file at once.
+server's own index and bucket, from `--config` and `--data-dir` as `serve`
+reads them: the Postgres database of [`[index]`](config.md#index) and the
+S3 bucket of [`[storage]`](config.md#storage) when they are set, with the
+same credentials. It doesn't need the server running; a running server
+stops serving the file at once.
 
 ```bash
 openxet purge 36f01138cb24db2e9c72d0c9fdb7dff31322b73b2e60b4d365bb1e3fb54d0f23 --config openxet.toml --dry-run

@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -326,5 +327,52 @@ fn purge_of_an_unknown_file_is_not_found_and_writes_nothing() {
             .join(&unknown[..2])
             .exists()
     );
+    f.assert_served_in_both_scopes();
+}
+
+/// With `storage.url`, the purge record goes to that object-store bucket,
+/// the one the server reads, never to a local bucket the data directory
+/// still holds: a record there would be missed by a reindex from the
+/// store, which would restore the file. A store that can't be reached
+/// fails the purge before the index changes.
+#[test]
+fn purge_uses_the_configured_object_store_not_a_leftover_local_bucket() {
+    let f = Fixture::new();
+    let config = f.dir.path().join("s3.toml");
+    let mut text = std::fs::read_to_string(&f.config).unwrap();
+    write!(
+        text,
+        "\n[cas]\ntransfer_key_file = {:?}\n\n[storage]\nurl = \"s3://openxet/prefix\"\n\n\
+         [storage.options]\nendpoint = \"http://127.0.0.1:9\"\nallow_http = true\n\
+         region = \"us-east-1\"\n",
+        f.server.data_dir.join("transfer.key")
+    )
+    .unwrap();
+    std::fs::write(&config, text).unwrap();
+    assert!(
+        f.server.data_dir.join("bucket").is_dir(),
+        "the leftover bucket"
+    );
+
+    let error = json_error(
+        &run(openxet()
+            .args(["purge", &f.hash, "--yes", "--json", "--config"])
+            .arg(&config)
+            .arg("--data-dir")
+            .arg(&f.server.data_dir)
+            .env("AWS_ACCESS_KEY_ID", "AKIAOPENXETTEST")
+            .env("AWS_SECRET_ACCESS_KEY", "openxet-test-secret")
+            .env("AWS_EC2_METADATA_DISABLED", "true")),
+        1,
+    );
+    assert_eq!(error["code"], "storage", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("s3://openxet/prefix"),
+        "{error}"
+    );
+    assert!(!f.record_path().exists(), "nothing in the local bucket");
     f.assert_served_in_both_scopes();
 }

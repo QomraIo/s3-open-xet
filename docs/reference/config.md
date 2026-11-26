@@ -321,7 +321,8 @@ uploads after a day, for uploads a crash left behind.
 
 Downloads are served through the transfer role, as with the local bucket:
 presigned URLs straight to the store come with ADR 0015 item 7.
-`openxet purge` works on the local bucket only for now.
+`openxet purge` writes its record to this bucket, with the same
+credentials.
 
 A MinIO bucket for development, with the credentials in the
 environment:

@@ -534,7 +534,10 @@ pub(crate) async fn open_index(config: &Config) -> Result<Arc<dyn HubIndex>, Cli
     Ok(Arc::new(index))
 }
 
-async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
+/// Opens the bucket `config` names: the local one in the data directory,
+/// or with `storage.url` the object-store bucket, after its
+/// conditional-create probe.
+pub(crate) async fn open_bucket(config: &Config) -> Result<Arc<dyn Bucket>, CliError> {
     let dir = &config.data_dir;
     let Some(url) = &config.storage_url else {
         let bucket = LocalBucket::open(&dir.join(BUCKET_DIR)).map_err(|err| {

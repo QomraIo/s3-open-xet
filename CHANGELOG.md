@@ -61,6 +61,14 @@ in CI.
   after that requests get `503 authn_unavailable`, never an unverified
   accept ([OIDC](docs/reference/config.md#oidc)).
 
+### Fixed in M3
+
+- `openxet purge` on a server with `storage.url` writes its purge record
+  to that S3 bucket. It used to look only in the data directory: it
+  refused when no local bucket was there, and when one was left from
+  an earlier run, wrote the record to it, where a rebuild of the index
+  from S3 would miss it and restore the file.
+
 ### Added in M2
 
 - Hub token, resolve and tree answer within 10 ms at p99 on an idle node,
